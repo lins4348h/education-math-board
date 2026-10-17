@@ -1,0 +1,695 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="國中數學拖移解題板：把卡片拖進算式空格，一步一步組出解題過程；錯的卡片對準常見誤解。">
+<title>拖移解題館</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Huninn&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<style>
+/* 版面概念：方格紙上的解題板——左邊是一行一行搭起來的算式，右邊是可拖的卡片盤；錯的卡片＝真實的誤解 */
+:root {
+  --paper: #f4f7fb;
+  --panel: #ffffff;
+  --ink: #18223d;
+  --muted: #56617f;
+  --line: #d3dbea;
+  --grid: rgba(54, 96, 190, 0.075);
+  --blue: #2449c9;
+  --blue-soft: #e4eafd;
+  --hl: #ffd84a;
+  --hl-ink: #3b2f00;
+  --ok: #17864a;
+  --ok-soft: #e1f4e8;
+  --bad: #cc2f2f;
+  --bad-soft: #fbe3e3;
+  --boss: #7a2fc0;
+  --boss-soft: #efe4fa;
+  --font-display: "Huninn", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  --font-body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --font-math: "Times New Roman", "Noto Serif TC", Georgia, serif;
+  --radius: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0f1528; --panel: #18203a; --ink: #e7ebf6; --muted: #9ba6c6; --line: #2d3862;
+    --grid: rgba(140, 170, 255, 0.07); --blue: #85a0ff; --blue-soft: #232f5c; --hl: #ffd84a; --hl-ink: #2b2200;
+    --ok: #45d08a; --ok-soft: #183a2a; --bad: #ff6d6d; --bad-soft: #43222a; --boss: #c79bff; --boss-soft: #2f2148;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0f1528; --panel: #18203a; --ink: #e7ebf6; --muted: #9ba6c6; --line: #2d3862;
+  --grid: rgba(140, 170, 255, 0.07); --blue: #85a0ff; --blue-soft: #232f5c; --hl: #ffd84a; --hl-ink: #2b2200;
+  --ok: #45d08a; --ok-soft: #183a2a; --bad: #ff6d6d; --bad-soft: #43222a; --boss: #c79bff; --boss-soft: #2f2148;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+body { margin: 0; }
+[hidden] { display: none !important; }
+body {
+  background-color: var(--paper);
+  background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+  color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 48px;
+}
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--paper); }
+.wrap { max-width: 1080px; margin: 0 auto; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; text-wrap: balance; line-height: 1.25; }
+button { font: inherit; color: inherit; }
+button:focus-visible, a:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+.m i { font-family: var(--font-math); font-style: italic; font-size: 1.12em; }
+.frac { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; line-height: 1.1; margin: 0 2px; }
+.frac > span:first-child { border-bottom: 2px solid currentColor; padding: 0 3px 2px; }
+.frac > span:last-child { padding: 2px 3px 0; }
+
+.btn { min-height: 48px; padding: 8px 18px; border-radius: 12px; border: 1.5px solid var(--line); background: var(--panel); cursor: pointer; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: var(--ink); }
+.btn:hover { border-color: var(--blue); }
+.btn.primary { background: var(--blue); border-color: var(--blue); color: var(--panel); }
+.btn.boss { background: var(--boss); border-color: var(--boss); color: var(--panel); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 13px; background: var(--blue-soft); color: var(--blue); font-weight: 500; white-space: nowrap; }
+.chip.plain { background: transparent; border: 1px solid var(--line); color: var(--muted); }
+.chip.trap { background: var(--bad-soft); color: var(--bad); }
+.chip.boss { background: var(--boss-soft); color: var(--boss); }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.row.end { justify-content: flex-end; }
+.muted { color: var(--muted); }
+
+/* ---------- 入口 ---------- */
+.hero { padding-block: 32px 4px; display: grid; gap: 10px; }
+.eyebrow { font-size: 13px; letter-spacing: .08em; color: var(--muted); }
+.hero h1 { font-size: clamp(36px, 7vw, 58px); margin: 0; }
+.hero h1 mark { background: linear-gradient(transparent 55%, var(--hl) 55%); color: inherit; padding: 0 4px; }
+.lead { margin: 0; max-width: 38em; color: var(--muted); font-size: 17px; }
+.demo-line { margin-top: 16px; background: var(--panel); border: 1.5px solid var(--ink); border-radius: var(--radius); padding: 14px 16px; display: grid; gap: 10px; max-width: 640px; }
+.demo-line .eq { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 24px; }
+.demo-line .cap { font-size: 14px; color: var(--muted); }
+.mini-slot { display: inline-flex; min-width: 70px; min-height: 44px; border: 2px dashed var(--blue); border-radius: 10px; align-items: center; justify-content: center; padding: 0 10px; animation: pulse 2.4s ease-in-out infinite; }
+.mini-card { display: inline-flex; min-height: 40px; align-items: center; padding: 0 12px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--panel); font-size: 20px; }
+.mini-card.trap { border-color: var(--bad); }
+@keyframes pulse { 50% { background: var(--blue-soft); } }
+.principles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 14px; }
+.principles div { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
+.principles b { display: block; font-family: var(--font-display); font-weight: 400; font-size: 18px; }
+.principles span { color: var(--muted); font-size: 14px; }
+.section-h { margin: 34px 0 12px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.section-h h2 { margin: 0; font-size: 26px; }
+.section-h p { margin: 0; color: var(--muted); }
+.packs { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.pack { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: grid; gap: 10px; grid-template-rows: auto auto auto 1fr auto; min-width: 0; }
+.pack h3 { margin: 0; font-size: 24px; }
+.pack p { margin: 0; color: var(--muted); }
+.pack .sample { background: var(--paper); border-radius: 10px; padding: 8px 12px; font-size: 17px; overflow-x: auto; }
+.pack .kinds { display: flex; flex-wrap: wrap; gap: 5px; align-content: flex-start; }
+.pack .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.design { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 0; overflow-x: auto; }
+.design table { border-collapse: collapse; width: 100%; min-width: 560px; }
+.design th, .design td { text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.design tr:last-child td, .design tr:last-child th { border-bottom: none; }
+.design th { width: 9em; font-weight: 700; white-space: nowrap; }
+.design td span { color: var(--muted); font-size: 14px; display: block; }
+.twoq { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 12px; }
+.twoq div { background: var(--panel); border: 1.5px solid var(--ink); border-radius: var(--radius); padding: 12px 16px; }
+.twoq b { display: block; }
+.twoq p { margin: 4px 0 0; color: var(--muted); }
+.prompt pre { margin: 0; white-space: pre-wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; font-family: var(--font-body); font-size: 15px; line-height: 1.7; overflow-x: auto; }
+.credit { margin-top: 28px; font-size: 13px; color: var(--muted); }
+.credit a { color: var(--blue); }
+
+/* ---------- 遊戲 ---------- */
+.gbar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--paper); display: flex; align-items: center; gap: 10px; padding-block: 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.gbar h2 { margin: 0; font-size: 22px; }
+.gbar .stats { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; font-size: 14px; white-space: nowrap; }
+.stat b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.bossbar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: center; background: var(--boss-soft); border-radius: var(--radius); padding: 10px 16px; margin-top: 12px; }
+.boss-face { width: 58px; height: 58px; border-radius: 18px; background: var(--boss); color: var(--panel); display: grid; place-items: center; font-family: var(--font-math); font-style: italic; font-size: 38px; line-height: 1; }
+.boss-face.hit { animation: hit .45s ease; }
+.boss-face.taunt { animation: taunt .5s ease; }
+@keyframes hit { 25% { transform: translateX(-6px) rotate(-8deg); filter: brightness(1.6); } 60% { transform: translateX(5px) rotate(5deg); } }
+@keyframes taunt { 30% { transform: scale(1.15); } }
+.hpwrap { display: grid; gap: 4px; min-width: 0; }
+.hpwrap .lbl { display: flex; justify-content: space-between; font-size: 14px; }
+.hp { height: 14px; border-radius: 7px; background: var(--panel); overflow: hidden; border: 1px solid var(--line); }
+.hp i { display: block; height: 100%; background: var(--boss); transition: width .5s ease; }
+.clock { font-family: var(--font-display); font-size: 28px; font-variant-numeric: tabular-nums; }
+.clock.low { color: var(--bad); }
+.dmg { position: fixed; z-index: 30; font-family: var(--font-display); font-size: 34px; color: var(--boss); pointer-events: none; animation: rise 1s ease forwards; }
+@keyframes rise { to { transform: translateY(-60px); opacity: 0; } }
+
+.work { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; margin-top: 14px; align-items: start; }
+@media (max-width: 860px) { .work { grid-template-columns: minmax(0, 1fr); } .gbar { position: static; } .gbar .stats { margin-left: 0; width: 100%; } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: grid; gap: 12px; min-width: 0; }
+.ptitle { font-size: 14px; color: var(--muted); }
+.story { font-size: 18px; line-height: 1.75; }
+.stem { font-size: 24px; }
+.sys { display: flex; align-items: stretch; gap: 8px; font-size: 22px; }
+.sys .brace { font-size: 64px; line-height: 1; font-weight: 200; display: flex; align-items: center; transform: scaleX(.6); }
+.sys .lines { display: grid; gap: 2px; align-content: center; }
+.board { display: grid; gap: 8px; }
+.bline { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 8px 10px; border-radius: 12px; font-size: 21px; }
+.bline .no { font-size: 12px; color: var(--muted); width: 100%; font-family: var(--font-body); }
+.bline.done { background: var(--ok-soft); }
+.bline.cur { border: 2px solid var(--blue); background: var(--blue-soft); }
+.bline .brk { flex-basis: 100%; height: 0; }
+.bline .filled-txt { font-weight: 700; }
+.slot { min-width: 72px; min-height: 50px; border-radius: 10px; border: 2px dashed var(--blue); background: var(--panel); display: inline-flex; align-items: center; justify-content: center; padding: 4px 10px; font-size: 20px; cursor: pointer; transition: background .15s; }
+.slot.filled { border-style: solid; border-color: var(--line); font-weight: 700; }
+.slot.over { background: var(--hl); }
+.slot.wrong { border-color: var(--bad); background: var(--bad-soft); }
+.slot.hl { box-shadow: 0 0 0 4px var(--hl); }
+.step-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: baseline; }
+.step-head b { font-family: var(--font-display); font-weight: 400; font-size: 20px; }
+.goal { font-size: 17px; }
+.scaffold { background: var(--paper); border-radius: 10px; padding: 8px 12px; font-size: 16px; }
+.fb { border-radius: 12px; padding: 10px 14px; background: var(--blue-soft); }
+.fb.bad { background: var(--bad-soft); }
+.fb.ok { background: var(--ok-soft); }
+.fb .kind { font-weight: 700; color: var(--bad); margin-right: 6px; }
+.tray { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px; border-radius: 12px; background: var(--paper); min-height: 74px; }
+.card { min-height: 50px; padding: 6px 14px; border-radius: 10px; border: 1.5px solid var(--line); border-bottom-width: 4px; background: var(--panel); font-size: 20px; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; display: inline-flex; align-items: center; text-align: left; max-width: 100%; }
+.card.sel { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue); transform: translateY(-3px); }
+.card.used { visibility: hidden; }
+.card.hl { box-shadow: 0 0 0 4px var(--hl); }
+.ghost { position: fixed; z-index: 40; pointer-events: none; opacity: .92; transform: translate(-50%, -60%) rotate(-3deg); box-shadow: 0 10px 24px rgba(0,0,0,.18); }
+.hints { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 15px; }
+.hints:empty { display: none; }
+.actions { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 8px; }
+.review { display: grid; gap: 10px; }
+.review h3 { margin: 0; font-size: 26px; }
+.rtable { width: 100%; border-collapse: collapse; font-size: 15px; }
+.rtable td, .rtable th { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: left; }
+.rtable th { color: var(--muted); font-weight: 500; font-size: 13px; }
+.rtable td.n { text-align: right; font-variant-numeric: tabular-nums; }
+details.kinds-d { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; margin-top: 12px; }
+details.kinds-d summary { cursor: pointer; padding: 10px 14px; min-height: 44px; font-weight: 500; }
+details.kinds-d div { padding: 0 14px 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ---------- 報告 ---------- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
+.tile span { font-size: 13px; color: var(--muted); display: block; }
+.tile b { font-family: var(--font-display); font-weight: 400; font-size: 32px; font-variant-numeric: tabular-nums; }
+.bars { display: grid; gap: 8px; }
+.barrow { display: grid; grid-template-columns: minmax(0, 12em) minmax(0, 1fr) 2.5em; gap: 10px; align-items: center; font-size: 15px; }
+.barrow .track { height: 16px; background: var(--paper); border-radius: 4px; overflow: hidden; }
+.barrow .track i { display: block; height: 100%; background: var(--bad); border-radius: 0 4px 4px 0; }
+.barrow .n { text-align: right; font-variant-numeric: tabular-nums; }
+.advice { background: var(--hl); color: var(--hl-ink); border-radius: 12px; padding: 12px 16px; }
+.slow td { background: var(--hl); color: var(--hl-ink); }
+@media (max-width: 520px) { .barrow { grid-template-columns: minmax(0, 1fr) 2.5em; } .barrow .track { grid-column: 1 / -1; grid-row: 2; } }
+.who { display: inline-flex; align-items: center; gap: 8px; background: var(--panel); border: 1.5px solid var(--ink); border-radius: 12px; padding: 4px 6px 4px 12px; }
+.who span { font-weight: 700; white-space: nowrap; }
+.who input { min-height: 40px; width: 9em; border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; font: inherit; font-size: 18px; background: var(--paper); color: var(--ink); }
+.who.inline { margin-top: 12px; }
+details.teacher { margin-top: 34px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+details.teacher > summary { cursor: pointer; padding: 14px 16px; min-height: 52px; font-weight: 700; font-size: 17px; }
+.teacher-body { padding: 0 16px 18px; display: grid; gap: 16px; }
+.teacher-body .design { border-radius: 12px; }
+code { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 0 5px; font-size: .92em; }
+.shot-tip { margin-top: 14px; background: var(--hl); color: var(--hl-ink); border-radius: 12px; padding: 10px 14px; font-size: 17px; }
+.shot { margin-top: 12px; background: var(--panel); border: 2px solid var(--ink); border-radius: var(--radius); padding: 16px; display: grid; gap: 14px; }
+.shot-head { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding-bottom: 12px; border-bottom: 1px dashed var(--line); }
+.shot-head span { display: block; font-size: 13px; color: var(--muted); }
+.shot-head b { font-size: 20px; }
+.shot-title { margin: 0; font-size: 28px; }
+.shot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.shot-grid h3 { margin: 0 0 8px; font-size: 18px; }
+.shot .advice { margin: 0; }
+@media (max-width: 520px) {
+  .shot { padding: 12px; gap: 10px; }
+  .shot-head { grid-template-columns: 1fr 1fr; }
+  .shot-head b { font-size: 16px; }
+  .shot-title { font-size: 22px; }
+  .shot .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .shot .tile { padding: 6px 8px; }
+  .shot .tile b { font-size: 22px; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+<script>
+/*ENGINE*/
+/*PACKS*/
+</script>
+<script>
+(function () {
+  const { PACKS, checkStep, revealHint, stepScore, SCORING, slotIds, mulberry32 } = window.SB;
+  const app = document.getElementById('app');
+  const BOSS_HP = 120, BOSS_SEC = 240;
+  const PLAYER_KEY = 'education-math-board:player';
+  let player = '';
+  try { player = localStorage.getItem(PLAYER_KEY) || ''; } catch (e) { /* 無法使用瀏覽器儲存 */ }
+  function setPlayer(v) {
+    player = v.trim().slice(0, 12);
+    try { localStorage.setItem(PLAYER_KEY, player); } catch (e) { /* 無法使用瀏覽器儲存 */ }
+    const el = document.getElementById('shot-player'); if (el) el.textContent = player || '（未填）';
+  }
+  function setHash(h) {
+    try { history.replaceState(null, '', h ? `#${h}` : location.pathname + location.search); } catch (e) { /* 沙盒可能不允許改網址 */ }
+  }
+
+  // ---------- 小工具 ----------
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  function M(s) {
+    return esc(s)
+      .replace(/(^|[^A-Za-z])([xy])(?![A-Za-z])/g, '$1<i>$2</i>')
+      .replace(/\[frac:(\d+)\|(\d+)\]/g, '<span class="frac"><span>$1</span><span>$2</span></span>');
+  }
+  let timers = [];
+  const clearTimers = () => { timers.forEach((t) => clearInterval(t)); timers = []; };
+
+  // ---------- 狀態 ----------
+  let S = null;
+  function newSession(pack, mode) {
+    S = {
+      pack, mode, problemNo: 0, score: 0, streak: 0, best: 0, events: [], stepResults: [],
+      boss: mode === 'boss' ? { hp: BOSS_HP, endsAt: Date.now() + BOSS_SEC * 1000, over: null } : null,
+    };
+    nextProblem();
+  }
+  function nextProblem() {
+    S.problemNo++;
+    S.problem = S.pack.make(Math.random);
+    S.stepIdx = 0; S.done = [];
+    S.results = [];
+    startStep();
+  }
+  function startStep() {
+    S.pl = {}; S.sel = null; S.errors = 0; S.hint = 0; S.fb = null; S.wrong = []; S.hl = null; S.t0 = Date.now();
+  }
+  const step = () => S.problem.steps[S.stepIdx];
+  const cardOf = (id) => step().cards.find((c) => c.id === id);
+
+  // ---------- 操作 ----------
+  function place(slot, cardId) {
+    for (const k of Object.keys(S.pl)) if (S.pl[k] === cardId) delete S.pl[k];
+    S.pl[slot] = cardId; S.sel = null; S.wrong = S.wrong.filter((w) => w !== slot); S.fb = null;
+  }
+  function tapSlot(slot) {
+    if (S.sel) place(slot, S.sel);
+    else if (S.pl[slot]) { delete S.pl[slot]; S.fb = null; }
+    renderPlay();
+  }
+  function tapCard(id) { S.sel = S.sel === id ? null : id; renderPlay(); }
+  function check() {
+    const st = step();
+    const res = checkStep(st, S.pl);
+    if (res.kind === 'incomplete') { S.fb = { t: 'info', h: res.fb }; S.wrong = res.wrong; return renderPlay(); }
+    S.events.push({ pack: S.pack.id, no: S.problemNo, step: st.key, ok: res.ok, kind: res.kind, ms: Date.now() - S.t0, hint: S.hint, errorsBefore: S.errors });
+    if (!res.ok) {
+      S.errors++; S.streak = 0; S.wrong = res.wrong;
+      const label = S.pack.kinds[res.kind] || '這一行還不成立';
+      S.fb = { t: 'bad', h: `<span class="kind">${esc(label)}</span>${M(res.fb)}` };
+      if (S.boss) bossAnim('taunt');
+      return renderPlay();
+    }
+    const pts = stepScore(S.errors, S.hint);
+    S.score += pts;
+    if (!S.errors && !S.hint) { S.streak++; S.best = Math.max(S.best, S.streak); } else S.streak = 0;
+    S.results.push({ key: st.key, pts, errors: S.errors, hint: S.hint, ms: Date.now() - S.t0 });
+    S.stepResults.push({ key: st.key, first: !S.errors && !S.hint, ms: Date.now() - S.t0 });
+    S.done.push({ step: st, pl: { ...S.pl } });
+    if (S.boss) damage(pts);
+    if (S.stepIdx + 1 < S.problem.steps.length) {
+      S.stepIdx++; startStep();
+      S.fb = { t: 'ok', h: `成立！+${pts} 分` };
+    } else {
+      S.stepIdx++;
+      const clean = S.results.every((r) => !r.errors && !r.hint);
+      S.bonus = clean ? SCORING.clean : 0;
+      S.score += S.bonus;
+      if (S.boss && S.bonus) damage(S.bonus, true);
+    }
+    renderPlay();
+  }
+  function hint() {
+    if (S.hint >= 3) return;
+    S.hint++;
+    S.events.push({ pack: S.pack.id, no: S.problemNo, step: step().key, ok: null, kind: 'hint', level: S.hint });
+    if (S.hint === 3) S.hl = revealHint(step(), S.pl);
+    renderPlay();
+  }
+
+  // ---------- 魔王 ----------
+  function damage(n, bonus) {
+    const b = S.boss; if (!b || b.over) return;
+    b.hp = Math.max(0, b.hp - n);
+    bossAnim('hit');
+    const face = document.querySelector('.boss-face');
+    if (face) {
+      const r = face.getBoundingClientRect();
+      const d = document.createElement('div');
+      d.className = 'dmg'; d.textContent = `−${n}${bonus ? ' 完美' : ''}`;
+      d.style.left = `${r.right + 8}px`; d.style.top = `${r.top}px`;
+      document.body.appendChild(d); setTimeout(() => d.remove(), 1000);
+    }
+    if (b.hp <= 0) { b.over = 'win'; setTimeout(() => { if (S && S.boss === b) showReport(); }, 900); }
+  }
+  function bossAnim(cls) {
+    const f = document.querySelector('.boss-face'); if (!f) return;
+    f.classList.remove('hit', 'taunt'); void f.offsetWidth; f.classList.add(cls);
+  }
+  function tickBoss() {
+    const b = S && S.boss; if (!b || b.over) return;
+    const left = Math.max(0, Math.ceil((b.endsAt - Date.now()) / 1000));
+    const el = document.getElementById('clock');
+    if (el) { el.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`; el.classList.toggle('low', left <= 30); }
+    if (left <= 0) { b.over = 'time'; showReport(); }
+  }
+
+  // ---------- 拖曳 ----------
+  let drag = null;
+  function onDown(e) {
+    const c = e.target.closest('.card[data-card]');
+    if (!c) return;
+    drag = { id: c.dataset.card, x: e.clientX, y: e.clientY, el: c, ghost: null, over: null };
+    try { c.setPointerCapture(e.pointerId); } catch (err) { /* 部分瀏覽器不支援 */ }
+  }
+  function onMove(e) {
+    if (!drag) return;
+    if (!drag.ghost) {
+      if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 8) return;
+      drag.ghost = drag.el.cloneNode(true);
+      drag.ghost.classList.add('ghost'); drag.ghost.classList.remove('sel', 'hl');
+      document.body.appendChild(drag.ghost);
+    }
+    drag.ghost.style.left = `${e.clientX}px`; drag.ghost.style.top = `${e.clientY}px`;
+    const under = document.elementFromPoint(e.clientX, e.clientY);
+    const slot = under && under.closest('.slot[data-slot]');
+    if (drag.over && drag.over !== slot) drag.over.classList.remove('over');
+    drag.over = slot; if (slot) slot.classList.add('over');
+  }
+  function onUp(e) {
+    if (!drag) return;
+    const d = drag; drag = null;
+    if (d.ghost) {
+      d.ghost.remove();
+      const under = document.elementFromPoint(e.clientX, e.clientY);
+      const slot = under && under.closest('.slot[data-slot]');
+      if (slot) { place(slot.dataset.slot, d.id); renderPlay(); }
+      else if (d.over) d.over.classList.remove('over');
+    } else tapCard(d.id);
+  }
+  function onCancel() { if (drag && drag.ghost) drag.ghost.remove(); drag = null; }
+
+  // ---------- 畫面：算式行 ----------
+  function lineHTML(st, pl, live) {
+    const card = (id) => st.cards.find((c) => c.id === id);
+    const tok = (t) => {
+      if (typeof t === 'string') return `<span class="m">${M(t)}</span>`;
+      if (t.br) return '<span class="brk"></span>';
+      if (t.frac) return `<span class="frac"><span>${t.frac[0].map(tok).join('')}</span><span>${t.frac[1].map(tok).join('')}</span></span>`;
+      const id = pl[t.slot], c = id && card(id);
+      if (!live) return `<span class="m filled-txt">${M(c ? c.text : '')}</span>`;
+      const cls = ['slot']; if (c) cls.push('filled'); if (S.wrong.includes(t.slot)) cls.push('wrong'); if (S.hl && S.hl.slot === t.slot) cls.push('hl');
+      return `<button class="${cls.join(' ')} m" data-slot="${t.slot}" aria-label="空格${c ? '：' + esc(c.text) : ''}"><span>${c ? M(c.text) : ''}</span></button>`;
+    };
+    return st.line.map(tok).join('');
+  }
+  function stemHTML(p) {
+    let h = '';
+    if (p.story) h += `<div class="story">${M(p.story)}</div>`;
+    if (p.stem.length === 1) h += `<div class="stem m">解方程式：${M(p.stem[0])}</div>`;
+    if (p.stem.length === 2) h += `<div class="sys m"><span class="brace" aria-hidden="true">{</span><div class="lines">${p.stem.map((l) => `<div>${M(l)}</div>`).join('')}</div></div>`;
+    return h;
+  }
+
+  function statsHTML() {
+    if (S.boss) return `<div class="stats"><span class="stat">分數 <b>${S.score}</b></span><button class="btn" data-act="report" style="min-height:40px">結束，看紀錄</button></div>`;
+    return `<div class="stats"><span class="stat">分數 <b>${S.score}</b></span><span class="stat">連續一次成立 <b>${S.streak}</b></span><span class="stat">完成 <b>${S.problemNo - (S.stepIdx < S.problem.steps.length ? 1 : 0)}</b> 題</span><button class="btn" data-act="report" style="min-height:40px">結束，看紀錄</button></div>`;
+  }
+
+  function renderPlay() {
+    const p = S.problem, finished = S.stepIdx >= p.steps.length;
+    const b = S.boss;
+    const doneLines = S.done.map((d, i) => `<div class="bline done"><span class="no">${i + 1}. ${esc(S.pack.stepLabels[d.step.key])}</span>${lineHTML(d.step, d.pl, false)}</div>`).join('');
+    let right;
+    if (!finished) {
+      const st = step();
+      const used = new Set(Object.values(S.pl));
+      right = `
+        <div class="step-head"><b>第 ${S.stepIdx + 1} / ${p.steps.length} 步・${esc(S.pack.stepLabels[st.key])}</b><span class="muted" style="font-size:14px">本步最高 10 分</span></div>
+        <div class="goal">${M(st.goal)}</div>
+        ${st.scaffold ? `<div class="scaffold m">${M(st.scaffold)}</div>` : ''}
+        ${S.fb ? `<div class="fb ${S.fb.t}" role="status" aria-live="polite">${S.fb.h}</div>` : '<div class="fb" role="status" aria-live="polite">把卡片拖進左邊的空格，或先點卡片、再點空格。點已放好的卡片可以拿回來。</div>'}
+        <div class="tray" aria-label="卡片">${st.cards.map((c) => `<button class="card m ${used.has(c.id) ? 'used' : ''} ${S.sel === c.id ? 'sel' : ''} ${S.hl && S.hl.card === c.id ? 'hl' : ''}" data-card="${c.id}" ${used.has(c.id) ? 'tabindex="-1" aria-hidden="true"' : ''}><span>${M(c.text)}</span></button>`).join('')}</div>
+        <ol class="hints">${st.hints.slice(0, S.hint).map((h, i) => `<li>${i === 2 ? '（亮黃框的格子放亮黃框的卡）' : ''}${M(h)}</li>`).join('')}</ol>
+        <div class="actions">
+          <button class="btn" data-act="hint" ${S.hint >= 3 ? 'disabled' : ''}>提示 ${S.hint}/3</button>
+          <button class="btn" data-act="clear">清空</button>
+          <button class="btn primary" data-act="check">檢查這一步</button>
+        </div>`;
+    } else {
+      const total = S.results.reduce((s, r) => s + r.pts, 0) + S.bonus;
+      right = `
+        <div class="review">
+          <h3>這一題完成了</h3>
+          <p style="margin:0">答案：<b class="m">${M(p.answerText)}</b></p>
+          <table class="rtable"><thead><tr><th>步驟</th><th>錯誤</th><th>提示</th><th style="text-align:right">得分</th></tr></thead>
+            <tbody>${S.results.map((r) => `<tr><td>${esc(S.pack.stepLabels[r.key])}</td><td>${r.errors || '—'}</td><td>${r.hint || '—'}</td><td class="n">${r.pts}</td></tr>`).join('')}
+            ${S.bonus ? `<tr><td colspan="3">零錯誤、零提示加分</td><td class="n">+${S.bonus}</td></tr>` : ''}
+            <tr><td colspan="3"><b>這一題</b></td><td class="n"><b>${total}</b></td></tr></tbody></table>
+          <div class="row end"><button class="btn" data-act="report">結束，看紀錄</button><button class="btn primary" data-act="next">下一題</button></div>
+        </div>`;
+    }
+    app.innerHTML = `
+      <div class="gbar">
+        <button class="btn" data-go="hub" style="min-height:44px">← 解題館</button>
+        <h2>${esc(S.pack.title)}</h2>
+        <span class="chip ${b ? 'boss' : ''}">${b ? '魔王對戰' : '練習'}</span>
+        ${statsHTML()}
+      </div>
+      ${b ? `<div class="bossbar"><div class="boss-face" aria-hidden="true">x</div>
+        <div class="hpwrap"><div class="lbl"><b>未知數魔王</b><span>${b.hp} / ${BOSS_HP}</span></div><div class="hp"><i style="width:${(b.hp / BOSS_HP) * 100}%"></i></div>
+        <span class="muted" style="font-size:13px">每完成一步就攻擊一次；一次成立傷害最高。錯了不扣血，但這一步的傷害會變少。</span></div>
+        <div class="clock" id="clock" aria-label="剩餘時間">4:00</div></div>` : ''}
+      <div class="work">
+        <section class="panel">
+          <div class="ptitle">${esc(S.pack.grade)}・${esc(S.pack.unit)}　第 ${S.problemNo} 題</div>
+          ${stemHTML(p)}
+          <div class="board">${doneLines}${!finished ? `<div class="bline cur"><span class="no">${S.stepIdx + 1}. ${esc(S.pack.stepLabels[step().key])}</span>${lineHTML(step(), S.pl, true)}</div>` : ''}</div>
+        </section>
+        <section class="panel">${right}</section>
+      </div>
+      <details class="kinds-d"><summary>這個內容包對準的誤解（${Object.keys(S.pack.kinds).length} 種）</summary><div>${Object.values(S.pack.kinds).map((k) => `<span class="chip trap">${esc(k)}</span>`).join('')}</div></details>`;
+    if (b) tickBoss();
+  }
+
+  // ---------- 報告（截圖傳給老師） ----------
+  function showReport() {
+    clearTimers(); setHash('');
+    const ev = S.events.filter((e) => e.ok !== null);
+    const kinds = {};
+    ev.filter((e) => !e.ok && e.kind !== 'other').forEach((e) => { kinds[e.kind] = (kinds[e.kind] || 0) + 1; });
+    const other = ev.filter((e) => !e.ok && e.kind === 'other').length;
+    const sr = S.stepResults;
+    const first = sr.length ? Math.round((sr.filter((r) => r.first).length / sr.length) * 100) : 0;
+    const hints = S.events.filter((e) => e.kind === 'hint').length;
+    const solved = S.problemNo - (S.stepIdx < S.problem.steps.length ? 1 : 0);
+    const byStep = {};
+    sr.forEach((r) => { const s = (byStep[r.key] ||= { n: 0, first: 0, ms: 0 }); s.n++; s.first += r.first ? 1 : 0; s.ms += r.ms; });
+    const stepRows = Object.entries(byStep).map(([k, s]) => ({ k, n: s.n, first: Math.round((s.first / s.n) * 100), sec: s.ms / s.n / 1000 }));
+    const slowest = stepRows.reduce((a, r) => (!a || r.sec > a.sec ? r : a), null);
+    const ranked = Object.entries(kinds).sort((a, b) => b[1] - a[1]);
+    const maxK = ranked.length ? ranked[0][1] : 1;
+    const b = S.boss;
+    const head = b ? (b.over === 'win' ? '打倒未知數魔王！' : b.over === 'time' ? `時間到，魔王還剩 ${b.hp} 血` : '對戰結束') : '練習結束';
+    const advice = ranked.length
+      ? `最常出現「${S.pack.kinds[ranked[0][0]]}」，可以挑一題請學生說說錯在哪裡，再對照正確的一行。${slowest && stepRows.length > 1 ? `「${S.pack.stepLabels[slowest.k]}」這一步平均最久。` : ''}`
+      : '這一局沒有出現誤解，可以挑戰下一個內容包。';
+    const now = new Date();
+    const when = `${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    app.innerHTML = `
+      <div class="gbar"><button class="btn" data-go="hub" style="min-height:44px">← 解題館</button><h2>${esc(S.pack.title)}</h2><span class="chip ${b ? 'boss' : ''}">${b ? '魔王對戰' : '練習'}</span></div>
+      <div class="shot-tip">請把下面這張<b>紀錄卡</b>截圖，傳給老師。</div>
+      ${player ? '' : `<label class="who inline"><span>先填班級-座號</span><input id="player" value="" placeholder="例：715-08" maxlength="12" autocomplete="off"></label>`}
+      <section class="shot" aria-label="紀錄卡">
+        <div class="shot-head">
+          <div><span>班級-座號</span><b id="shot-player">${esc(player || '（未填）')}</b></div>
+          <div><span>內容</span><b>${esc(S.pack.grade)} ${esc(S.pack.title)}・${b ? '魔王對戰' : '練習'}</b></div>
+          <div><span>時間</span><b>${when}</b></div>
+        </div>
+        <h2 class="shot-title">${esc(head)}</h2>
+        <div class="tiles">
+          <div class="tile"><span>完成題數</span><b>${solved}</b></div>
+          <div class="tile"><span>完成步數</span><b>${sr.length}</b></div>
+          <div class="tile"><span>首次正確率</span><b>${first}%</b></div>
+          <div class="tile"><span>用了提示</span><b>${hints}</b></div>
+          <div class="tile"><span>總分</span><b>${S.score}</b></div>
+        </div>
+        <div class="shot-grid">
+          <div>
+            <h3>誤解排行</h3>
+            ${ranked.length ? `<div class="bars">${ranked.map(([k, n]) => `<div class="barrow"><span>${esc(S.pack.kinds[k])}</span><span class="track"><i style="width:${(n / maxK) * 100}%"></i></span><span class="n">${n}</span></div>`).join('')}</div>` : '<p class="muted" style="margin:0">沒有出現誤解。</p>'}
+            ${other ? `<p class="muted" style="margin:6px 0 0;font-size:14px">另有 ${other} 次未歸類的錯誤。</p>` : ''}
+          </div>
+          ${stepRows.length ? `<div><h3>各步驟表現</h3>
+            <table class="rtable"><thead><tr><th>步驟</th><th style="text-align:right">次數</th><th style="text-align:right">首次正確</th><th style="text-align:right">平均秒數</th></tr></thead>
+            <tbody>${stepRows.map((r) => `<tr class="${slowest && r.k === slowest.k && stepRows.length > 1 ? 'slow' : ''}"><td>${esc(S.pack.stepLabels[r.k])}</td><td class="n">${r.n}</td><td class="n">${r.first}%</td><td class="n">${r.sec.toFixed(1)}</td></tr>`).join('')}</tbody></table></div>` : ''}
+        </div>
+        <p class="advice"><b>給老師：</b>${esc(advice)}</p>
+      </section>
+      <p class="muted" style="font-size:14px">這份紀錄只存在這台裝置上，離開頁面就不見了。</p>
+      <div class="row end"><button class="btn" data-go="hub">回解題館</button><button class="btn ${b ? 'boss' : 'primary'}" data-again="${b ? 'boss' : 'practice'}">再玩一次</button></div>`;
+    window.scrollTo(0, 0);
+  }
+  // ---------- 入口 ----------
+  const PROMPT = `請照 AGENTS.md，幫我新增一個拖移解題板的內容包。
+單元：＿＿＿＿（例：八上 乘法公式）
+學習目標：學生能＿＿＿＿
+我上課時的解題步驟：
+1. ＿＿＿＿
+2. ＿＿＿＿
+3. ＿＿＿＿
+我常看到的錯誤：
+1. ＿＿＿＿
+2. ＿＿＿＿
+3. ＿＿＿＿
+請先整理步驟與誤解給我確認，再寫內容包、跑測試、重新建置。`;
+
+  function packCard(pk) {
+    const p = pk.make(mulberry32(11));
+    const sample = p.story ? M(p.story) : p.stem.length >= 2 ? M(p.stem.join('，')) : M(p.stem[0] || '');
+    const n = Object.keys(pk.kinds).length;
+    return `<article class="pack">
+      <div class="row"><span class="chip">${esc(pk.grade)}</span><span class="chip plain">${p.steps.length} 步</span></div>
+      <h3>${esc(pk.title)}</h3>
+      <p>${esc(pk.pitch)}</p>
+      <div class="sample m">${sample}</div>
+      <div class="kinds">${Object.values(pk.kinds).slice(0, 5).map((k) => `<span class="chip trap">${esc(k)}</span>`).join('')}${n > 5 ? `<span class="chip plain">還有 ${n - 5} 種</span>` : ''}</div>
+      <div class="btns"><button class="btn primary" data-start="${pk.id}" data-mode="practice">練習</button><button class="btn boss" data-start="${pk.id}" data-mode="boss">魔王對戰</button></div>
+    </article>`;
+  }
+
+  function showHub() {
+    clearTimers(); S = null; setHash('');
+    const grades = [...new Set(PACKS.map((p) => p.grade))];
+    app.innerHTML = `
+      <header class="hero">
+        <span class="eyebrow">國中數學・拖移解題板</span>
+        <h1>拖移<mark>解題館</mark></h1>
+        <p class="lead">把卡片拖進算式的空格，一行一行組出解題過程。每一張錯的卡片，都對準一個常見的錯誤；選錯了，系統會告訴你錯在哪裡。</p>
+        <div class="row" style="margin-top:6px">
+          <label class="who"><span>班級-座號</span><input id="player" value="${esc(player)}" placeholder="例：715-08" maxlength="12" autocomplete="off"></label>
+          <span class="muted" style="font-size:14px;flex:1 1 220px">結束時會顯示在紀錄卡上，方便截圖傳給老師。不要輸入真實姓名。</span>
+        </div>
+        <div class="demo-line" aria-label="示意">
+          <span class="cap">例：去括號這一步，你會拖哪一張？</span>
+          <div class="eq m"><span>${M('−3(x + 2) =')}</span><span class="mini-slot">${M('−3x')}</span><span class="mini-slot">?</span></div>
+          <div class="row"><span class="mini-card m">${M('−6')}</span><span class="mini-card trap m">${M('+2')}</span><span class="mini-card trap m">${M('+6')}</span><span class="cap">紅框是誘答：只乘第一項、正負號錯</span></div>
+        </div>
+      </header>
+      ${grades.map((g) => `<div class="section-h"><h2>${esc(g)}</h2></div><div class="packs">${PACKS.filter((p) => p.grade === g).map(packCard).join('')}</div>`).join('')}
+      <div class="section-h"><h2>兩種玩法</h2><p>同一個解題板，換一個外殼</p></div>
+      <div class="twoq">
+        <div><b>練習</b><p>自己的節奏，沒有時間壓力。每一步都可以看提示。</p></div>
+        <div><b>魔王對戰</b><p>4 分鐘內打倒未知數魔王。每完成一步就攻擊一次，一次就做對的傷害最高。</p></div>
+      </div>
+      <details class="teacher">
+        <summary>給老師：設計原理、直接連結、做自己的內容包</summary>
+        <div class="teacher-body">
+          <div class="principles">
+            <div><b>拖的是過程</b><span>每一步都要自己組出算式，不是從選項挑最後答案。</span></div>
+            <div><b>錯卡就是誤解</b><span>誘答卡由誤解規則產生，選了哪一張就是診斷資料。</span></div>
+            <div><b>每一步都留紀錄</b><span>結束時的紀錄卡列出誤解排行和卡最久的步驟。</span></div>
+          </div>
+          <div class="design"><table><tbody>
+            <tr><th>1 教學目標</th><td>學生能依序完成去括號、移項、合併、消去、代回等步驟，並從文字題列出方程式。</td></tr>
+            <tr><th>2 評量證據</th><td>學生在每一個空格放了哪張卡、第一次就成立的比例、用了幾層提示。<span>每次「檢查」都記一筆：步驟、對錯、誤解代碼、秒數。</span></td></tr>
+            <tr><th>3 核心機制</th><td>把數、項、式子拖進算式的空格，組出這一步的數學關係。完成的行留在板子上，下一步引用它。</td></tr>
+            <tr><th>4 誤解→誘答</th><td>每張錯卡對準一個誤解，各有一句診斷回饋。</td></tr>
+            <tr><th>5 回饋與計分</th><td>每步 10 分，錯一次 −1（最多 −3），提示依層數 −2／−4／−6，每步最低 3 分；整題零錯零提示 +5。<span>分數付給「獨立完成」，不付給手速。</span></td></tr>
+            <tr><th>6 鷹架</th><td>三層提示：方向 → 關鍵關係 → 標出一個空格該放哪張卡。</td></tr>
+            <tr><th>7 課堂運作</th><td>例題後 15～20 分鐘獨立練習；最後 5 分鐘全班一起打魔王；學生截圖紀錄卡繳交。</td></tr>
+            <tr><th>8 資料留痕</th><td>紀錄卡顯示誤解排行、各步驟首次正確率與平均秒數，以及給老師的建議。</td></tr>
+          </tbody></table></div>
+          <div class="twoq">
+            <div><b>問題 1：拿掉數學，還玩得下去嗎？</b><p>玩不下去。沒有「這一項要不要變號、要乘多少」的判斷，就沒有任何可以拖的卡。</p></div>
+            <div><b>問題 2：遊戲操作就是要評量的數學行為嗎？</b><p>是。要評量的是「建立每一步的等式」，遊戲操作正是把量放進那個等式的正確位置。</p></div>
+          </div>
+          <div>
+            <h3 style="margin:0 0 6px;font-size:20px">直接連結到某個內容包</h3>
+            <p style="margin:0">在網址最後加上 <code>#代號</code> 是練習，加上 <code>#代號-boss</code> 是魔王對戰。現有代號：${PACKS.map((p) => `<code>${esc(p.id)}</code>（${esc(p.title)}）`).join('、')}。</p>
+          </div>
+          <div>
+            <h3 style="margin:0 0 6px;font-size:20px">做自己的內容包</h3>
+            <p style="margin:0 0 8px">用 AI Agent 打開這個專案，把下面這段貼給它，填好空格。</p>
+            <div class="prompt"><pre id="prompt-text">${esc(PROMPT)}</pre></div>
+            <div class="row end" style="margin-top:10px"><span id="copy-note" class="muted" style="font-size:14px" aria-live="polite"></span><button class="btn primary" data-act="copy">複製提示詞</button></div>
+          </div>
+        </div>
+      </details>
+      <p class="credit">遊戲機制與設計規範參考三師爸的開源專案 <a href="https://github.com/mathruffian-dot/math-game-templates" target="_blank" rel="noopener">mathruffian-dot/math-game-templates</a>（MIT 授權）的 T3 拖拉解題板。</p>`;
+    window.scrollTo(0, 0);
+  }
+  function start(id, mode) {
+    const pk = PACKS.find((p) => p.id === id); if (!pk) return showHub();
+    clearTimers();
+    newSession(pk, mode);
+    setHash(mode === 'boss' ? `${id}-boss` : id);
+    renderPlay(); window.scrollTo(0, 0);
+    if (mode === 'boss') timers.push(setInterval(tickBoss, 250));
+  }
+
+  // ---------- 事件 ----------
+  app.addEventListener('pointerdown', onDown);
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onCancel);
+  app.addEventListener('click', async (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.card) return; // 卡片由 pointer 事件處理（含點選）
+    if (b.dataset.go === 'hub') return showHub();
+    if (b.dataset.start) return start(b.dataset.start, b.dataset.mode);
+    if (b.dataset.again) return start(S.pack.id, b.dataset.again);
+    if (b.dataset.slot) return tapSlot(b.dataset.slot);
+    const act = b.dataset.act;
+    if (act === 'check') return check();
+    if (act === 'hint') return hint();
+    if (act === 'clear') { S.pl = {}; S.sel = null; S.wrong = []; S.fb = null; return renderPlay(); }
+    if (act === 'next') { nextProblem(); renderPlay(); return window.scrollTo(0, 0); }
+    if (act === 'report') return showReport();
+    if (act === 'copy') {
+      const note = document.getElementById('copy-note');
+      try { await navigator.clipboard.writeText(PROMPT); note.textContent = '已複製'; }
+      catch (err) {
+        const r = document.createRange(); r.selectNodeContents(document.getElementById('prompt-text'));
+        const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+        note.textContent = '已選取文字，請按複製';
+      }
+    }
+  });
+  // 鍵盤：卡片用 Enter / 空白鍵選取
+  app.addEventListener('keydown', (e) => {
+    const c = e.target.closest && e.target.closest('.card[data-card]');
+    if (c && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); tapCard(c.dataset.card); }
+  });
+
+  app.addEventListener('input', (e) => { if (e.target.id === 'player') setPlayer(e.target.value); });
+
+  // 網址 #代號 直接進練習、#代號-boss 直接進魔王對戰
+  function route() {
+    const h = decodeURIComponent(location.hash.slice(1));
+    const direct = PACKS.find((p) => p.id === h);
+    const boss = !direct && h.endsWith('-boss') && PACKS.find((p) => p.id === h.slice(0, -5));
+    if (direct) start(direct.id, 'practice');
+    else if (boss) start(boss.id, 'boss');
+    else showHub();
+  }
+  window.addEventListener('hashchange', route);
+  route();
+})();
+</script>
+</body>
+</html>

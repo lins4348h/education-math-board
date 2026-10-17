@@ -1,0 +1,11 @@
+{
+  "name": "education-math-board",
+  "version": "1.0.0",
+  "private": true,
+  "description": "國中數學拖移解題板：把卡片拖進算式空格，一步一步組出解題過程",
+  "scripts": {
+    "test": "node test/run.mjs",
+    "build": "node scripts/build.mjs"
+  },
+  "license": "MIT"
+}

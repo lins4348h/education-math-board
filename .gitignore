@@ -1,0 +1,6 @@
+# 教材原檔（有著作權，不要上傳）
+materials/*
+!materials/.gitkeep
+node_modules/
+.DS_Store
+Thumbs.db

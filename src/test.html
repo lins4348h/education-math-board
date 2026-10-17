@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>內容包驗算</title>
+<style>
+  :root { --bg: #f4f7fb; --panel: #fff; --ink: #18223d; --muted: #56617f; --line: #d3dbea; --ok: #17864a; --ok-soft: #e1f4e8; --bad: #cc2f2f; --bad-soft: #fbe3e3; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0f1528; --panel: #18203a; --ink: #e7ebf6; --muted: #9ba6c6; --line: #2d3862; --ok: #45d08a; --ok-soft: #183a2a; --bad: #ff6d6d; --bad-soft: #43222a; color-scheme: dark; } }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif; line-height: 1.6; padding: 24px max(16px, env(safe-area-inset-left)); }
+  main { max-width: 820px; margin: 0 auto; display: grid; gap: 14px; }
+  h1 { margin: 0; font-size: 28px; }
+  .r { background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--ok); border-radius: 12px; padding: 12px 16px; }
+  .r.bad { border-left-color: var(--bad); background: var(--bad-soft); }
+  .r b { font-size: 18px; }
+  .r ul { margin: 6px 0 0; padding-left: 20px; }
+  .sum { padding: 12px 16px; border-radius: 12px; background: var(--ok-soft); font-size: 18px; font-weight: 700; }
+  .sum.bad { background: var(--bad-soft); }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>內容包驗算</h1>
+  <p class="muted" style="margin:0">每個內容包隨機產生 500 題，把每一張正解卡代回原方程式，並檢查每一張誘答卡都有對應的錯誤回饋。</p>
+  <div id="out" class="muted">驗算中……</div>
+</main>
+<script>
+/*ENGINE*/
+/*PACKS*/
+/*VERIFY*/
+</script>
+<script>
+  setTimeout(() => {
+    const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const rs = SBTest.verifyAll(SB, { n: 500 });
+    const bad = rs.filter((r) => !r.ok).length;
+    document.getElementById('out').innerHTML =
+      `<div class="sum ${bad ? 'bad' : ''}">${bad ? `${bad} 個內容包沒有通過` : `全部通過（${rs.length} 個內容包）`}</div>` +
+      rs.map((r) => `<div class="r ${r.ok ? '' : 'bad'}"><b>${r.ok ? '✔' : '✘'} ${esc(r.title)}</b>（${esc(r.id)}）<br>
+        <span class="muted">${r.problems} 題、${r.steps} 步、${r.evalLines} 行算式代回答案</span>
+        ${r.ok ? '' : `<ul>${r.errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul>`}</div>`).join('');
+  }, 50);
+</script>
+</body>
+</html>

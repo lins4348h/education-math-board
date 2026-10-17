@@ -1,0 +1,21 @@
+# 每次上傳都自動驗算，並確認 index.html 是最新建置的結果
+name: 驗算
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 驗算全部內容包
+        run: node test/run.mjs
+      - name: 確認 index.html 已重新建置
+        run: |
+          node scripts/build.mjs
+          git diff --exit-code index.html test.html || (echo "index.html 或 test.html 不是最新的，請執行 node scripts/build.mjs 後再上傳。" && exit 1)

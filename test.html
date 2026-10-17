@@ -1,0 +1,961 @@
+<!doctype html>
+<!-- 這個檔案由 node scripts/build.mjs 產生，請不要直接修改；要改內容請改 packs/ 再重新建置。 -->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>內容包驗算</title>
+<style>
+  :root { --bg: #f4f7fb; --panel: #fff; --ink: #18223d; --muted: #56617f; --line: #d3dbea; --ok: #17864a; --ok-soft: #e1f4e8; --bad: #cc2f2f; --bad-soft: #fbe3e3; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0f1528; --panel: #18203a; --ink: #e7ebf6; --muted: #9ba6c6; --line: #2d3862; --ok: #45d08a; --ok-soft: #183a2a; --bad: #ff6d6d; --bad-soft: #43222a; color-scheme: dark; } }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif; line-height: 1.6; padding: 24px max(16px, env(safe-area-inset-left)); }
+  main { max-width: 820px; margin: 0 auto; display: grid; gap: 14px; }
+  h1 { margin: 0; font-size: 28px; }
+  .r { background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--ok); border-radius: 12px; padding: 12px 16px; }
+  .r.bad { border-left-color: var(--bad); background: var(--bad-soft); }
+  .r b { font-size: 18px; }
+  .r ul { margin: 6px 0 0; padding-left: 20px; }
+  .sum { padding: 12px 16px; border-radius: 12px; background: var(--ok-soft); font-size: 18px; font-weight: 700; }
+  .sum.bad { background: var(--bad-soft); }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>內容包驗算</h1>
+  <p class="muted" style="margin:0">每個內容包隨機產生 500 題，把每一張正解卡代回原方程式，並檢查每一張誘答卡都有對應的錯誤回饋。</p>
+  <div id="out" class="muted">驗算中……</div>
+</main>
+<script>
+// 拖移解題板引擎（純邏輯，沒有 DOM；瀏覽器與 node 測試共用）。老師與 Agent 都不要修改這個檔案。
+// 內容包放在 packs/，每個檔案呼叫 SB.register(pack)。格式見 docs/pack-format.md。
+//   拖的是解題過程不是答案、誘答卡對準誤解、三層提示、完成一步才得分、每一步留痕。
+(function (root) {
+  // ---------- 亂數與格式 ----------
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const rnd = (rng, lo, hi) => lo + Math.floor(rng() * (hi - lo + 1));
+  const pick = (rng, a) => a[Math.floor(rng() * a.length)];
+  const nz = (rng, lo, hi) => { for (;;) { const v = rnd(rng, lo, hi); if (v) return v; } };
+  function shuffle(rng, arr) {
+    const a = [...arr];
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  }
+  const gcd = (a, b) => { a = Math.abs(a); b = Math.abs(b); while (b) [a, b] = [b, a % b]; return a; };
+
+  const num = (n) => (n < 0 ? `−${-n}` : `${n}`);
+  const sg = (n) => (n < 0 ? `−${-n}` : `+${n}`);
+  const pn = (n) => (n < 0 ? `(−${-n})` : `${n}`);
+  const op = (n) => (n < 0 ? `− ${-n}` : `+ ${n}`);
+  function term(c, v, signed) {
+    if (!v) return signed ? sg(c) : num(c);
+    const a = Math.abs(c);
+    return (c < 0 ? '−' : signed ? '+' : '') + (a === 1 ? '' : a) + v;
+  }
+  function lin(parts) {
+    let out = '';
+    for (const [c, v] of parts) {
+      if (!c) continue;
+      const a = Math.abs(c);
+      const t = v ? (a === 1 ? '' : a) + v : String(a);
+      out += out ? ` ${c < 0 ? '−' : '+'} ${t}` : (c < 0 ? '−' : '') + t;
+    }
+    return out || '0';
+  }
+  const eqXY = (a, b, c) => `${lin([[a, 'x'], [b, 'y']])} = ${num(c)}`;
+  const fracText = (n, d) => `${n * d < 0 ? '−' : ''}[frac:${Math.abs(n)}|${Math.abs(d)}]`;
+
+  // ---------- 引擎 ----------
+  function walk(line, visit) {
+    for (const t of line || []) {
+      if (t && typeof t === 'object' && t.frac) { walk(t.frac[0], visit); walk(t.frac[1], visit); }
+      else visit(t);
+    }
+  }
+  function slotIds(step) {
+    const ids = [];
+    walk(step.line, (t) => { if (t && typeof t === 'object' && t.slot) ids.push(t.slot); });
+    return ids;
+  }
+
+  // spec.cards 可含 false（條件不成立的誘答），會被濾掉；引用不存在卡片的診斷規則也一併濾掉。
+  // 回傳 null 表示卡片文字重複（呼叫端重新出題）。
+  function buildStep(spec, rng) {
+    const cards = spec.cards.filter(Boolean);
+    const texts = cards.map((c) => c.text);
+    if (new Set(texts).size !== texts.length) return null;
+    const keys = new Set(cards.map((c) => c.key));
+    const has = (k) => [].concat(k).every((x) => keys.has(x));
+    const order = shuffle(rng, cards);
+    const idOf = new Map(order.map((c, i) => [c.key, `c${i + 1}`]));
+    const map = (k) => (Array.isArray(k) ? k.map(map) : idOf.get(k));
+    const mapObj = (o) => Object.fromEntries(Object.entries(o).map(([s, k]) => [s, map(k)]));
+    const diagnose = (spec.diagnose || []).filter(Boolean).filter((r) => Object.values(r.when).every(has));
+    if (!spec.accept.every((a) => Object.values(a).every(has))) return null;
+    return {
+      key: spec.key, goal: spec.goal, scaffold: spec.scaffold || '', line: spec.line, hints: spec.hints, fallback: spec.fallback,
+      cards: order.map(({ key, ...c }) => ({ id: idOf.get(key), ...c })),
+      accept: spec.accept.map(mapObj),
+      diagnose: diagnose.map((r) => ({ ...r, when: mapObj(r.when) })),
+    };
+  }
+
+  function checkStep(step, pl) {
+    const ids = slotIds(step);
+    const missing = ids.filter((s) => !pl[s]);
+    if (missing.length) return { ok: false, kind: 'incomplete', fb: '還有空格沒有放卡片。', wrong: missing };
+    let best = null;
+    for (const a of step.accept) {
+      const w = ids.filter((s) => a[s] !== pl[s]);
+      if (!best || w.length < best.length) best = w;
+    }
+    if (!best.length) return { ok: true, kind: 'ok', fb: '', wrong: [] };
+    for (const r of step.diagnose) {
+      if (Object.entries(r.when).every(([s, w]) => [].concat(w).includes(pl[s]))) {
+        return { ok: false, kind: r.kind, fb: r.fb, wrong: r.slots || Object.keys(r.when) };
+      }
+    }
+    return { ok: false, kind: 'other', fb: step.fallback || '對照上一行，再檢查紅框的格子。', wrong: best };
+  }
+
+  function revealHint(step, pl) {
+    const a = step.accept[0];
+    for (const s of slotIds(step)) if (pl[s] !== a[s]) return { slot: s, card: a[s] };
+    return null;
+  }
+
+  const SCORING = { base: 10, hint: [0, 2, 4, 6], err: 1, errCap: 3, min: 3, clean: 5 };
+  function stepScore(errors, hintLevel) {
+    return Math.max(SCORING.min, SCORING.base - SCORING.hint[Math.min(hintLevel, 3)] - Math.min(errors * SCORING.err, SCORING.errCap));
+  }
+
+  function makeWith(name, tryMake) {
+    return (rng = Math.random) => {
+      for (let i = 0; i < 3000; i++) {
+        const p = tryMake(rng);
+        if (p && p.steps.every(Boolean)) return p;
+      }
+      throw new Error(`${name}：產生題目失敗`);
+    };
+  }
+
+  // ---------- 共用步驟：x = n/d = r（整數解） ----------
+  function divideStep(rng, { A, K, x, wrongCoef, label }) {
+    return buildStep({
+      key: 'divide',
+      goal: '係數化為 1：兩邊同除以 x 的係數',
+      line: ['x =', { frac: [[{ slot: 'n' }], [{ slot: 'd' }]] }, '=', { slot: 'r' }],
+      cards: [
+        { key: 'nK', text: num(K) },
+        { key: 'dA', text: num(A) },
+        wrongCoef !== undefined && wrongCoef !== A && { key: 'wa', text: num(wrongCoef), trap: 'divide_wrong_object' },
+        { key: 'r', text: num(x) },
+        { key: 'rn', text: num(-x), trap: 'sign_error' },
+        Math.abs(x) > 1 && { key: 'ri', text: fracText(1, x), trap: 'frac_inverted' },
+      ],
+      accept: [{ n: 'nK', d: 'dA', r: 'r' }],
+      diagnose: [
+        { when: { n: 'dA', d: 'nK' }, kind: 'frac_inverted', fb: `${term(A, 'x')} = ${num(K)}，x ＝ 常數 ÷ 係數：${num(K)} 放分子、${num(A)} 放分母。` },
+        { when: { d: 'wa' }, kind: 'divide_wrong_object', fb: `要除以合併後的係數 ${num(A)}，${label || '不是原本的係數'}。` },
+        { when: { n: 'wa' }, kind: 'divide_wrong_object', fb: `分子是合併後的常數 ${num(K)}。` },
+        { when: { r: 'rn' }, kind: 'sign_error', fb: `檢查正負號：${num(K)} ÷ ${pn(A)} 是${x > 0 ? '正' : '負'}數。` },
+        { when: { r: 'ri' }, kind: 'frac_inverted', fb: '最後結果要等於左邊的分數，分子、分母不能對調。' },
+      ],
+      hints: ['兩邊同除以 x 的係數，x 的係數就變成 1。', `x ＝ ${num(K)} ÷ ${pn(A)}，分子放 ${num(K)}。`, `分母放 ${num(A)}，${num(K)} ÷ ${pn(A)} = ${num(x)}。`],
+    }, rng);
+  }
+
+  // ---------- 內容包登記 ----------
+  const PACKS = [];
+  function register(pack) {
+    for (const k of ['id', 'grade', 'title', 'unit', 'pitch', 'kinds', 'stepLabels', 'make']) {
+      if (!pack[k]) throw new Error(`內容包缺少欄位 ${k}`);
+    }
+    if (!/^[a-z0-9-]{2,30}$/.test(pack.id)) throw new Error(`內容包 id 只能用小寫英文、數字、連字號：${pack.id}`);
+    if (PACKS.some((p) => p.id === pack.id)) throw new Error(`內容包 id 重複：${pack.id}`);
+    PACKS.push(pack);
+  }
+
+  // 內容包可用的工具
+  const tools = { buildStep, makeWith, divideStep, rnd, pick, nz, shuffle, gcd, num, sg, pn, op, term, lin, eqXY, fracText };
+  const api = { mulberry32, slotIds, checkStep, revealHint, stepScore, SCORING, PACKS, register, tools, walk };
+  root.SB = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+// ---- packs/01-paren.js ----
+// 內容包：去括號解一元一次方程式 a(x + b) = cx + d
+// 格式說明見 docs/pack-format.md；誘答卡、診斷規則、三層提示的寫法可以照這個檔案仿寫。
+(function () {
+  const { buildStep, makeWith, divideStep, rnd, pick, nz, gcd, num, sg, pn, op, term, lin, eqXY, fracText } = SB.tools;
+
+  const paren = {
+    id: 'paren', grade: '七上', title: '去括號解方程式', unit: '一元一次方程式（分配律、移項、合併）',
+    pitch: '先用分配律去括號，再移項、合併、係數化為 1。括號前是負數時最容易出錯。',
+    kinds: {
+      dist_first_only: '分配律只乘到第一項', dist_sign: '分配時正負號錯', sign_not_flipped: '移項沒有變號',
+      unlike_terms: 'x 項與常數放錯邊', combine_error: '合併同類項算錯', divide_wrong_object: '除以錯的數',
+      frac_inverted: '分子分母顛倒', sign_error: '答案正負號錯',
+    },
+    stepLabels: { expand: '去括號', move: '移項', combine: '合併同類項', divide: '係數化為 1' },
+    make: makeWith('paren', (rng) => {
+      const a = pick(rng, [-5, -4, -3, -2, 2, 3, 4, 5]);
+      const b = nz(rng, -6, 6);
+      const c = nz(rng, -6, 6);
+      const A = a - c;
+      if (!A || Math.abs(A) > 9) return null;
+      const x = pick(rng, [-6, -5, -4, -3, -2, 2, 3, 4, 5, 6]);
+      const ab = a * b, d = A * x + ab, K = d - ab;
+      if (!d || Math.abs(d) > 40) return null;
+      const rhs = lin([[c, 'x'], [d, '']]);
+      const stem = `${num(a)}(x ${op(b)}) = ${rhs}`;
+      const s1 = buildStep({
+        key: 'expand', goal: '去括號：括號外的數，要乘進括號裡的每一項',
+        line: [{ slot: 'p' }, { slot: 'q' }, '=', rhs],
+        cards: [
+          { key: 'px', text: term(a, 'x') },
+          { key: 'qk', text: sg(ab) },
+          { key: 't1', text: sg(b), trap: 'dist_first_only' },
+          { key: 't2', text: sg(-ab), trap: 'dist_sign' },
+          { key: 't3', text: term(-a, 'x'), trap: 'dist_sign' },
+        ],
+        accept: [{ p: 'px', q: 'qk' }],
+        diagnose: [
+          { when: { q: 't1' }, kind: 'dist_first_only', fb: `括號外的 ${num(a)} 要乘進每一項：${pn(a)} × ${pn(b)} = ${num(ab)}，不能只乘 x。` },
+          { when: { q: 't2' }, kind: 'dist_sign', fb: `${pn(a)} × ${pn(b)} 要連同正負號一起算，等於 ${num(ab)}。` },
+          { when: { p: 't3' }, kind: 'dist_sign', fb: `${pn(a)} × x = ${term(a, 'x')}，括號外的正負號也要乘進去。` },
+        ],
+        hints: ['括號外的數要乘進括號裡的「每一項」。', `${num(a)}(x ${op(b)}) = ${pn(a)} × x + ${pn(a)} × ${pn(b)}`, `第一項是 ${term(a, 'x')}。`],
+      }, rng);
+      const s2 = buildStep({
+        key: 'move', goal: '移項：x 項移到左邊、常數移到右邊，移過去要變號',
+        line: [term(a, 'x'), { slot: 'm' }, '=', num(d), { slot: 'n' }],
+        cards: [
+          { key: 'mx', text: term(-c, 'x', true) },
+          { key: 'px', text: term(c, 'x', true), trap: 'sign_not_flipped' },
+          { key: 'mn', text: sg(-ab) },
+          { key: 'pk', text: sg(ab), trap: 'sign_not_flipped' },
+        ],
+        accept: [{ m: 'mx', n: 'mn' }],
+        diagnose: [
+          { when: { m: ['mn', 'pk'] }, kind: 'unlike_terms', fb: `左邊這格要放「含 x 的項」：是右邊的 ${term(c, 'x')} 要搬過來。` },
+          { when: { n: ['mx', 'px'] }, kind: 'unlike_terms', fb: `右邊這格要放常數：是左邊的 ${sg(ab)} 要搬過去。` },
+          { when: { m: 'px' }, kind: 'sign_not_flipped', fb: `右邊的 ${term(c, 'x')} 移到左邊要變號，變成 ${term(-c, 'x', true)}。` },
+          { when: { n: 'pk' }, kind: 'sign_not_flipped', fb: `左邊的 ${sg(ab)} 移到右邊要變號，變成 ${sg(-ab)}。` },
+        ],
+        hints: ['含 x 的項都到左邊，常數都到右邊。', '移項就是兩邊同時加或減同一個量，所以搬過去要變號。', `右邊的 ${term(c, 'x')} 搬到左邊會變成 ${term(-c, 'x', true)}。`],
+      }, rng);
+      const s3 = buildStep({
+        key: 'combine', goal: '合併同類項：左邊合成一個 x 項，右邊合成一個數',
+        line: [{ slot: 'l' }, '=', { slot: 'r' }],
+        cards: [
+          { key: 'cl', text: term(A, 'x') },
+          { key: 'kr', text: num(K) },
+          a + c !== 0 && { key: 'tw', text: term(a + c, 'x'), trap: 'combine_error' },
+          { key: 'kw', text: num(d + ab), trap: 'combine_error' },
+        ],
+        accept: [{ l: 'cl', r: 'kr' }],
+        diagnose: [
+          { when: { l: 'tw' }, kind: 'combine_error', fb: `x 的係數要連同正負號算：${num(a)} ${op(-c)} = ${num(A)}。` },
+          { when: { r: 'kw' }, kind: 'combine_error', fb: `常數要連同正負號算：${num(d)} ${op(-ab)} = ${num(K)}。` },
+        ],
+        hints: ['左邊兩個 x 項合併，右邊兩個數合併。', `x 的係數：${num(a)} ${op(-c)}；常數：${num(d)} ${op(-ab)}。`, `左邊合併後是 ${term(A, 'x')}。`],
+      }, rng);
+      const s4 = divideStep(rng, { A, K, x, wrongCoef: a, label: `不是括號外的 ${num(a)}` });
+      return { stem: [stem], params: { a, b, c, d }, answer: { x }, answerText: `x = ${num(x)}`, steps: [s1, s2, s3, s4] };
+    }),
+  };
+
+  SB.register(paren);
+})();
+
+// ---- packs/02-word1.js ----
+// 內容包：一元一次應用題（買東西、年齡、剪緞帶三種題型）
+// 格式說明見 docs/pack-format.md；誘答卡、診斷規則、三層提示的寫法可以照這個檔案仿寫。
+(function () {
+  const { buildStep, makeWith, divideStep, rnd, pick, nz, gcd, num, sg, pn, op, term, lin, eqXY, fracText } = SB.tools;
+
+  function wordBuy(rng) {
+    const n = rnd(rng, 3, 8), x = rnd(rng, 8, 30), p = rnd(rng, 4, 16) * 5, T = n * x + p;
+    return {
+      story: `小安買了 ${n} 枝原子筆和 1 本 ${p} 元的筆記本，共付了 ${T} 元。每枝原子筆多少元？`,
+      params: { t: 'buy', n, x, p, T }, x,
+      define: { ok: '每枝原子筆 x 元', traps: [['總共 x 元', `總共 ${T} 元是已知的，要把「題目問的量」設成 x。`], ['筆記本 x 元', `筆記本 ${p} 元是已知的，題目問的是原子筆。`]] },
+      eq: {
+        L: `${n}x + ${p}`, R: `${T}`,
+        traps: [
+          [`x + ${p}`, 'miss_multiplier', `買了 ${n} 枝，原子筆的錢是 ${n} × x = ${n}x。`],
+          [`${n}(x + ${p})`, 'wrong_grouping', `${n}(x + ${p}) 表示買了 ${n} 組「筆＋筆記本」，但筆記本只買 1 本。`],
+        ],
+      },
+      simp: {
+        accept: [[term(n, 'x'), num(T - p)]],
+        traps: [[num(T + p), 'sign_not_flipped', `把 +${p} 移到右邊要變號：${T} − ${p} = ${T - p}。`]],
+        hint: `${n}x + ${p} = ${T}，把 ${p} 移到右邊。`,
+      },
+      coef: n, K: T - p,
+      ans: { ok: `每枝原子筆 ${x} 元`, trap: [`筆記本 ${x} 元`, '題目問的是原子筆，不是筆記本。'] },
+    };
+  }
+  function wordAge(rng) {
+    const D = rnd(rng, 6, 14), k = pick(rng, [2, 3]), x = rnd(rng, 2, 10), F = k * (D + x) - x;
+    if (F < 28 || F > 55) return null;
+    return {
+      story: `爸爸今年 ${F} 歲，女兒今年 ${D} 歲。再過幾年，爸爸的年齡會是女兒的 ${k} 倍？`,
+      params: { t: 'age', D, k, x, F }, x,
+      define: { ok: 'x 年後', traps: [['女兒 x 歲', `女兒今年 ${D} 歲是已知的，題目問的是「幾年後」。`], ['爸爸 x 歲', `爸爸今年 ${F} 歲是已知的，題目問的是「幾年後」。`]] },
+      eq: {
+        L: `${F} + x`, R: `${k}(${D} + x)`,
+        traps: [
+          [`${F} − x`, 'direction', `x 年後，爸爸會長大 x 歲，是 ${F} + x。`],
+          [`${k} × ${D} + x`, 'times_scope', `女兒 x 年後是 ${D} + x 歲，整個要乘 ${k}：${k}(${D} + x)。`],
+          [`${D} + x`, 'times_missing', `爸爸的年齡是女兒的 ${k} 倍，女兒那邊要乘 ${k}。`],
+        ],
+      },
+      simp: {
+        accept: [[term(k - 1, 'x'), num(F - k * D)], [term(1 - k, 'x'), num(k * D - F)]],
+        traps: [
+          [num(F + k * D), 'sign_not_flipped', `${k * D} 移到另一邊要變號。`],
+          [num(F - D), 'dist_first_only', `${k}(${D} + x) 要把 ${k} 乘進 ${D} 和 x：${k * D} + ${k}x。`],
+        ],
+        hint: `先去括號：${k}(${D} + x) = ${k * D} + ${k}x，再把 x 項放同一邊。`,
+      },
+      coef: k - 1, K: F - k * D,
+      ans: { ok: `${x} 年後`, trap: [`女兒 ${D + x} 歲`, '題目問的是「幾年後」，不是女兒幾歲。'] },
+    };
+  }
+  function wordRope(rng) {
+    const x = rnd(rng, 8, 40), k = pick(rng, [2, 3]), m = rnd(rng, 3, 15), L = x + k * x + m;
+    return {
+      story: `一條長 ${L} 公分的緞帶剪成長、短兩段，長段比短段的 ${k} 倍多 ${m} 公分。短段是多少公分？`,
+      params: { t: 'rope', x, k, m, L }, x,
+      define: { ok: '短段 x 公分', traps: [['全長 x 公分', `全長 ${L} 公分是已知的，要設題目問的短段。`], ['長段比短段多 x 公分', '這個量題目沒有問，設成 x 列不出方程式。']] },
+      eq: {
+        L: `x + (${k}x + ${m})`, R: `${L}`,
+        traps: [
+          [`x + ${k}x`, 'miss_more', `長段是「${k} 倍多 ${m}」，要寫成 ${k}x + ${m}。`],
+          [`x + (${k}x − ${m})`, 'more_less', `「多 ${m} 公分」要用加的。`],
+          [`x + ${k}(x + ${m})`, 'times_scope', `是短段的 ${k} 倍「再多 ${m}」，${m} 不在括號裡。`],
+        ],
+      },
+      simp: {
+        accept: [[term(k + 1, 'x'), num(L - m)]],
+        traps: [
+          [term(k, 'x'), 'combine_error', `x + ${k}x = ${k + 1}x，x 本身也是 1x。`],
+          [num(L + m), 'sign_not_flipped', `把 +${m} 移到右邊要變號：${L} − ${m} = ${L - m}。`],
+        ],
+        hint: `左邊：x + ${k}x + ${m}，x 項合併，${m} 移到右邊。`,
+      },
+      coef: k + 1, K: L - m,
+      ans: { ok: `短段 ${x} 公分`, trap: [`長段 ${x} 公分`, '題目問的是短段。'] },
+    };
+  }
+  const word1 = {
+    id: 'word1', grade: '七上', title: '一元一次應用題', unit: '一元一次方程式的應用（列式）',
+    pitch: '從文字題設未知數、拖出方程式、化簡、解出並作答。列式是學生最卡的一步。',
+    kinds: {
+      wrong_unknown: '設錯未知數（設成已知量）', miss_multiplier: '列式漏乘數量', wrong_grouping: '括號範圍錯',
+      direction: '「幾年後」方向錯', times_scope: '倍數只乘到一部分', times_missing: '漏了倍數關係',
+      miss_more: '漏了「多幾」', more_less: '「多、少」用錯運算', sign_not_flipped: '移項沒有變號',
+      dist_first_only: '分配律只乘到第一項', combine_error: '合併同類項算錯', not_divided: '忘了除以係數',
+      sign_error: '答案正負號錯', answer_entity: '答非所問',
+    },
+    stepLabels: { define: '設未知數', equation: '列方程式', simplify: '化簡', solve: '解出並作答' },
+    make: makeWith('word1', (rng) => {
+      const w = pick(rng, [wordBuy, wordAge, wordRope])(rng);
+      if (!w) return null;
+      const s1 = buildStep({
+        key: 'define', goal: '設未知數：把「題目問的量」設成 x',
+        line: ['設', { slot: 'u' }],
+        cards: [{ key: 'ok', text: w.define.ok }, ...w.define.traps.map(([t], i) => ({ key: `t${i}`, text: t, trap: 'wrong_unknown' }))],
+        accept: [{ u: 'ok' }],
+        diagnose: w.define.traps.map(([, fb], i) => ({ when: { u: `t${i}` }, kind: 'wrong_unknown', fb })),
+        hints: ['先找題目最後問的是什麼。', '已經知道的數字不用設成 x。', `設「${w.define.ok}」。`],
+      }, rng);
+      const s2 = buildStep({
+        key: 'equation', goal: '列方程式：找出「相等」的兩個量，分別放在等號兩邊',
+        line: [{ slot: 'l' }, '=', { slot: 'r' }],
+        cards: [{ key: 'L', text: w.eq.L }, { key: 'R', text: w.eq.R }, ...w.eq.traps.map(([t, k], i) => ({ key: `t${i}`, text: t, trap: k }))],
+        accept: [{ l: 'L', r: 'R' }, { l: 'R', r: 'L' }],
+        diagnose: w.eq.traps.flatMap(([, k, fb], i) => [{ when: { l: `t${i}` }, kind: k, fb }, { when: { r: `t${i}` }, kind: k, fb }]),
+        hints: ['想一想：題目裡哪兩個量會相等？', `一邊用 x 表示，另一邊是題目給的數。`, `其中一邊是 ${w.eq.L}。`],
+      }, rng);
+      const sa = w.simp.accept;
+      const s3 = buildStep({
+        key: 'simplify', goal: '化簡成「ax = 數」',
+        line: [{ slot: 'l' }, '=', { slot: 'r' }],
+        cards: [
+          ...sa.flatMap(([cx, kk], i) => [{ key: `c${i}`, text: cx }, { key: `k${i}`, text: kk }]),
+          ...w.simp.traps.map(([t, k], i) => ({ key: `t${i}`, text: t, trap: k })),
+        ],
+        accept: sa.map((_, i) => ({ l: `c${i}`, r: `k${i}` })),
+        diagnose: w.simp.traps.flatMap(([t, k, fb], i) => (/x$/.test(t) ? [{ when: { l: `t${i}` }, kind: k, fb }] : [{ when: { r: `t${i}` }, kind: k, fb }])),
+        fallback: '左右兩格要配成同一個等式：x 項和常數要對應。',
+        hints: ['去括號、移項、合併，整理成「幾 x ＝ 一個數」。', w.simp.hint, `左邊是 ${sa[0][0]}。`],
+      }, rng);
+      const X = w.x;
+      const s4 = buildStep({
+        key: 'solve', goal: '解出 x，並用完整的句子回答',
+        line: ['x =', { slot: 'v' }, '　答：', { slot: 'a' }],
+        cards: [
+          { key: 'v', text: num(X) },
+          w.coef !== 1 && w.K !== X && { key: 'nd', text: num(w.K), trap: 'not_divided' },
+          w.params.t === 'age' && { key: 'ng', text: num(-X), trap: 'sign_error' },
+          { key: 'a', text: w.ans.ok },
+          { key: 'ae', text: w.ans.trap[0], trap: 'answer_entity' },
+        ],
+        accept: [{ v: 'v', a: 'a' }],
+        diagnose: [
+          { when: { v: 'nd' }, kind: 'not_divided', fb: `${term(w.coef, 'x')} = ${num(w.K)}，還要兩邊同除以 ${w.coef}。` },
+          { when: { v: 'ng' }, kind: 'sign_error', fb: '年數不會是負的，檢查化簡時 x 的係數正負號。' },
+          { when: { a: 'ae' }, kind: 'answer_entity', fb: w.ans.trap[1] },
+        ],
+        hints: ['兩邊同除以 x 的係數。', `x = ${num(w.K)} ÷ ${w.coef}。`, `x = ${num(X)}，再回頭看題目問什麼。`],
+      }, rng);
+      return { story: w.story, stem: [], params: w.params, answer: { x: X }, answerText: w.ans.ok, steps: [s1, s2, s3, s4] };
+    }),
+  };
+
+  SB.register(word1);
+})();
+
+// ---- packs/03-elim.js ----
+// 內容包：加減消去法解二元一次聯立方程式
+// 格式說明見 docs/pack-format.md；誘答卡、診斷規則、三層提示的寫法可以照這個檔案仿寫。
+(function () {
+  const { buildStep, makeWith, divideStep, rnd, pick, nz, gcd, num, sg, pn, op, term, lin, eqXY, fracText } = SB.tools;
+
+  const elim = {
+    id: 'elim', grade: '七下', title: '加減消去法', unit: '二元一次聯立方程式（加減消去）',
+    pitch: '交叉乘倍數讓 y 的係數相同，判斷相加或相減，消去 y 後求 x，再代回求 y。',
+    kinds: {
+      self_coef: '乘的倍數配錯', rhs_not_scaled: '等號右邊沒有一起乘', partial_scale: '只乘了部分的項',
+      add_sub: '加減選錯，y 沒有消去', sub_sign: '等號右邊的加減算錯', not_divided: '忘了除以係數',
+      sign_error: '答案正負號錯', sign_not_flipped: '移項沒有變號',
+    },
+    stepLabels: { multiply: '乘倍數', scaled: '兩式乘開', eliminate: '相加或相減', solvex: '求 x', back: '代回求 y' },
+    make: makeWith('elim', (rng) => {
+      const x0 = nz(rng, -6, 6), y0 = nz(rng, -6, 6);
+      const B = [1, 2, 3, 4, 5];
+      const ab1 = pick(rng, B), ab2 = pick(rng, B);
+      if (ab1 === ab2 || gcd(ab1, ab2) !== 1) return null;
+      const b1 = ab1 * (rng() < 0.5 ? -1 : 1), b2 = ab2 * (rng() < 0.5 ? -1 : 1);
+      const a1 = nz(rng, -5, 5), a2 = nz(rng, -5, 5);
+      if (a1 * b2 - a2 * b1 === 0) return null;
+      const c1 = a1 * x0 + b1 * y0, c2 = a2 * x0 + b2 * y0;
+      if (Math.abs(c1) > 40 || Math.abs(c2) > 40) return null;
+      const m1 = ab2, m2 = ab1, Lc = ab1 * ab2;
+      const A1 = m1 * a1, B1 = m1 * b1, C1 = m1 * c1, A2 = m2 * a2, B2 = m2 * b2, C2 = m2 * c2;
+      const same = Math.sign(B1) === Math.sign(B2);
+      const A = same ? A1 - A2 : A1 + A2, K = same ? C1 - C2 : C1 + C2;
+      if (!A || K % A !== 0 || K / A !== x0) return null;
+      const s1 = buildStep({
+        key: 'multiply', goal: '兩式各乘上多少，y 的係數絕對值才會相同？',
+        line: ['① ×', { slot: 'm1' }, '　② ×', { slot: 'm2' }],
+        cards: [
+          { key: 'k1', text: num(m1) }, { key: 'k2', text: num(m2) },
+          { key: 'd1', text: num(m1 + m2) },
+          Lc !== m1 && Lc !== m2 && Lc !== m1 + m2 && { key: 'd2', text: num(Lc) },
+        ],
+        accept: [{ m1: 'k1', m2: 'k2' }],
+        diagnose: [{ when: { m1: 'k2', m2: 'k1' }, kind: 'self_coef', fb: `乘上自己的係數，y 會變成 ${term(b1 * m2, 'y')} 和 ${term(b2 * m1, 'y')}，絕對值不同。要「交叉」乘對方的 y 係數。` }],
+        fallback: `檢查：① 的 y 係數 ${num(b1)} 乘上第一格、② 的 y 係數 ${num(b2)} 乘上第二格，絕對值要相同。`,
+        hints: [`看 y 的係數：① 是 ${num(b1)}、② 是 ${num(b2)}。`, `讓兩個 y 係數都變成 ${Lc} 或 −${Lc}。`, `① 要乘 ${m1}。`],
+      }, rng);
+      const big = m1 !== 1 ? 1 : 2; // 至少有一式的倍數不是 1
+      const s2 = buildStep({
+        key: 'scaled', goal: '把兩式乘開：等號兩邊的每一項都要乘',
+        scaffold: `① × ${m1}，② × ${m2}`,
+        line: ['①′', { slot: 'p' }, { br: 1 }, '②′', { slot: 'q' }],
+        cards: [
+          { key: 'e1', text: eqXY(A1, B1, C1) }, { key: 'e2', text: eqXY(A2, B2, C2) },
+          m1 !== 1 && { key: 'r1', text: eqXY(A1, B1, c1), trap: 'rhs_not_scaled' },
+          m2 !== 1 && { key: 'r2', text: eqXY(A2, B2, c2), trap: 'rhs_not_scaled' },
+          big === 1 ? { key: 'pp', text: eqXY(A1, b1, C1), trap: 'partial_scale' } : { key: 'pp', text: eqXY(A2, b2, C2), trap: 'partial_scale' },
+        ],
+        accept: [{ p: 'e1', q: 'e2' }],
+        diagnose: [
+          { when: { p: 'r1' }, kind: 'rhs_not_scaled', fb: `等號右邊的 ${num(c1)} 也要乘 ${m1}，變成 ${num(C1)}。` },
+          { when: { q: 'r2' }, kind: 'rhs_not_scaled', fb: `等號右邊的 ${num(c2)} 也要乘 ${m2}，變成 ${num(C2)}。` },
+          { when: { p: 'pp' }, kind: 'partial_scale', fb: `① 的每一項都要乘 ${m1}，y 項也是。` },
+          { when: { q: 'pp' }, kind: 'partial_scale', fb: `② 的每一項都要乘 ${m2}，y 項也是。` },
+        ],
+        fallback: '①′ 來自 ① 乘倍數、②′ 來自 ② 乘倍數，檢查有沒有放反。',
+        hints: ['等號兩邊的每一項都要乘上同一個數。', `①′ 的 y 項是 ${term(B1, 'y')}，②′ 的 y 項是 ${term(B2, 'y')}。`, `①′ 是 ${eqXY(A1, B1, C1)}。`],
+      }, rng);
+      const Aw = same ? A1 + A2 : A1 - A2, Bw = same ? B1 + B2 : B1 - B2, Kw = same ? C1 + C2 : C1 - C2;
+      const Ke = same ? C1 + C2 : C1 - C2;
+      const s3 = buildStep({
+        key: 'eliminate', goal: 'y 的係數同號要相減、異號要相加，才能消去 y',
+        line: [{ slot: 'o' }, '，得', { slot: 'r' }],
+        cards: [
+          { key: 'oa', text: '①′ + ②′' }, { key: 'os', text: '①′ − ②′' },
+          { key: 'ok', text: `${term(A, 'x')} = ${num(K)}` },
+          { key: 'tw', text: eqXY(Aw, Bw, Kw), trap: 'add_sub' },
+          Ke !== K && `${term(A, 'x')} = ${num(Ke)}` !== eqXY(Aw, Bw, Kw) && { key: 'tk', text: `${term(A, 'x')} = ${num(Ke)}`, trap: 'sub_sign' },
+        ],
+        accept: [{ o: same ? 'os' : 'oa', r: 'ok' }],
+        diagnose: [
+          { when: { o: same ? 'oa' : 'os' }, kind: 'add_sub', fb: `${term(B1, 'y')} 和 ${term(B2, 'y')} ${same ? '同號，要相減' : '異號，要相加'}才會消去。` },
+          { when: { r: 'tw' }, kind: 'add_sub', fb: '這是用錯運算的結果，y 沒有消去。' },
+          { when: { r: 'tk' }, kind: 'sub_sign', fb: `等號右邊也要${same ? '相減' : '相加'}：${num(C1)} ${same ? op(-C2) : op(C2)} = ${num(K)}。` },
+        ],
+        hints: [`看 y 的係數：${term(B1, 'y')} 和 ${term(B2, 'y')}。`, same ? '同號相減會變成 0。' : '一正一負相加會變成 0。', `用 ${same ? '①′ − ②′' : '①′ + ②′'}。`],
+      }, rng);
+      const s4 = buildStep({
+        key: 'solvex', goal: '求出 x',
+        line: ['x =', { slot: 'v' }],
+        cards: [
+          { key: 'v', text: num(x0) },
+          Math.abs(A) !== 1 && { key: 'nd', text: num(K), trap: 'not_divided' },
+          { key: 'ng', text: num(-x0), trap: 'sign_error' },
+        ],
+        accept: [{ v: 'v' }],
+        diagnose: [
+          { when: { v: 'nd' }, kind: 'not_divided', fb: `${term(A, 'x')} = ${num(K)}，還要兩邊同除以 ${num(A)}。` },
+          { when: { v: 'ng' }, kind: 'sign_error', fb: `${num(K)} ÷ ${pn(A)} 是${x0 > 0 ? '正' : '負'}數。` },
+        ],
+        hints: ['兩邊同除以 x 的係數。', `x = ${num(K)} ÷ ${pn(A)}`, `x = ${num(x0)}`],
+      }, rng);
+      const R1 = c1 - a1 * x0;
+      const s5 = buildStep({
+        key: 'back', goal: '把 x 代回 ①，求出 y',
+        scaffold: `代入 ①：${num(a1)} × ${pn(x0)} ${b1 < 0 ? '−' : '+'} ${term(Math.abs(b1), 'y')} = ${num(c1)}`,
+        line: [{ slot: 'k' }, '，y =', { slot: 'y' }],
+        cards: [
+          { key: 'k', text: `${term(b1, 'y')} = ${num(R1)}` },
+          { key: 'kw', text: `${term(b1, 'y')} = ${num(c1 + a1 * x0)}`, trap: 'sign_not_flipped' },
+          { key: 'y', text: num(y0) },
+          { key: 'yn', text: num(-y0), trap: 'sign_error' },
+          Math.abs(b1) !== 1 && { key: 'yd', text: num(R1), trap: 'not_divided' },
+        ],
+        accept: [{ k: 'k', y: 'y' }],
+        diagnose: [
+          { when: { k: 'kw' }, kind: 'sign_not_flipped', fb: `${num(a1 * x0)} 移到右邊要變號：${num(c1)} ${op(-a1 * x0)} = ${num(R1)}。` },
+          { when: { y: 'yn' }, kind: 'sign_error', fb: `${num(R1)} ÷ ${pn(b1)} 是${y0 > 0 ? '正' : '負'}數。` },
+          { when: { y: 'yd' }, kind: 'not_divided', fb: `${term(b1, 'y')} = ${num(R1)}，還要兩邊同除以 ${num(b1)}。` },
+        ],
+        hints: [`先算 ${num(a1)} × ${pn(x0)} = ${num(a1 * x0)}。`, `把 ${num(a1 * x0)} 移到右邊。`, `${term(b1, 'y')} = ${num(R1)}。`],
+      }, rng);
+      return {
+        stem: [`① ${eqXY(a1, b1, c1)}`, `② ${eqXY(a2, b2, c2)}`], params: { a1, b1, c1, a2, b2, c2 },
+        answer: { x: x0, y: y0 }, answerText: `x = ${num(x0)}，y = ${num(y0)}`, steps: [s1, s2, s3, s4, s5],
+      };
+    }),
+  };
+
+  SB.register(elim);
+})();
+
+// ---- packs/04-subst.js ----
+// 內容包：代入消去法解二元一次聯立方程式
+// 格式說明見 docs/pack-format.md；誘答卡、診斷規則、三層提示的寫法可以照這個檔案仿寫。
+(function () {
+  const { buildStep, makeWith, divideStep, rnd, pick, nz, gcd, num, sg, pn, op, term, lin, eqXY, fracText } = SB.tools;
+
+  const subst = {
+    id: 'subst', grade: '七下', title: '代入消去法', unit: '二元一次聯立方程式（代入消去）',
+    pitch: '把 ① 的 y 整個代入 ②，記得加括號；去括號、合併求 x，再代回 ① 求 y。',
+    kinds: {
+      no_paren: '代入時沒加括號', copy_sign: '代入時抄錯正負號', dist_first_only: '分配律只乘到第一項',
+      dist_sign: '分配時正負號錯', sign_not_flipped: '移項沒有變號', combine_error: '合併同類項算錯',
+      not_divided: '忘了除以係數', sign_error: '答案正負號錯', forgot_const: '漏加常數項',
+    },
+    stepLabels: { sub: '代入', expand: '去括號', combine: '移項合併', solvex: '求 x', solvey: '求 y' },
+    make: makeWith('subst', (rng) => {
+      const p = nz(rng, -4, 4), q = nz(rng, -8, 8), a = nz(rng, -5, 5), b = pick(rng, [-5, -4, -3, -2, 2, 3, 4, 5]);
+      const x0 = nz(rng, -5, 5), y0 = p * x0 + q;
+      if (!y0 || Math.abs(y0) > 15) return null;
+      const c = a * x0 + b * y0, A = a + b * p;
+      if (!A || Math.abs(c) > 50) return null;
+      const yexp = lin([[p, 'x'], [q, '']]);
+      const bp = b * p, bq = b * q, K = c - bq;
+      const s1 = buildStep({
+        key: 'sub', goal: '把 ① 的 y 代入 ②（y 是一整個式子）',
+        line: [`${term(a, 'x')} + ${pn(b)} ×`, { slot: 's' }, `= ${num(c)}`],
+        cards: [
+          { key: 'ok', text: `(${yexp})` },
+          { key: 'np', text: yexp, trap: 'no_paren' },
+          { key: 'cs', text: `(${lin([[p, 'x'], [-q, '']])})`, trap: 'copy_sign' },
+        ],
+        accept: [{ s: 'ok' }],
+        diagnose: [
+          { when: { s: 'np' }, kind: 'no_paren', fb: `y 是一整個式子，代入要加括號：${pn(b)} × (${yexp})。不加括號，${num(b)} 只會乘到第一項。` },
+          { when: { s: 'cs' }, kind: 'copy_sign', fb: `① 是 y = ${yexp}，常數項是 ${sg(q)}，抄的時候正負號要一樣。` },
+        ],
+        hints: ['② 裡的 y，換成 ① 等號右邊的式子。', '代入的是「一整個」式子，要加括號。', `放 (${yexp})。`],
+      }, rng);
+      const s2 = buildStep({
+        key: 'expand', goal: '去括號：括號前的數乘進每一項',
+        line: [term(a, 'x'), { slot: 'u' }, { slot: 'v' }, '=', num(c)],
+        cards: [
+          { key: 'u', text: term(bp, 'x', true) }, { key: 'v', text: sg(bq) },
+          { key: 't1', text: sg(q), trap: 'dist_first_only' },
+          { key: 't2', text: sg(-bq), trap: 'dist_sign' },
+          { key: 't3', text: term(-bp, 'x', true), trap: 'dist_sign' },
+        ],
+        accept: [{ u: 'u', v: 'v' }],
+        diagnose: [
+          { when: { v: 't1' }, kind: 'dist_first_only', fb: `${pn(b)} 要乘進括號裡的每一項：${pn(b)} × ${pn(q)} = ${num(bq)}。` },
+          { when: { v: 't2' }, kind: 'dist_sign', fb: `${pn(b)} × ${pn(q)} 要連同正負號算，等於 ${num(bq)}。` },
+          { when: { u: 't3' }, kind: 'dist_sign', fb: `${pn(b)} × ${term(p, 'x')} = ${term(bp, 'x')}。` },
+        ],
+        hints: [`${pn(b)} 要乘括號裡的每一項。`, `${pn(b)} × ${term(p, 'x')}，以及 ${pn(b)} × ${pn(q)}。`, `x 項是 ${term(bp, 'x', true)}。`],
+      }, rng);
+      const s3 = buildStep({
+        key: 'combine', goal: '合併 x 項，常數移到右邊',
+        line: [{ slot: 'l' }, '=', { slot: 'r' }],
+        cards: [
+          { key: 'l', text: term(A, 'x') }, { key: 'r', text: num(K) },
+          { key: 'kw', text: num(c + bq), trap: 'sign_not_flipped' },
+          a - bp !== 0 && a - bp !== A && { key: 'cw', text: term(a - bp, 'x'), trap: 'combine_error' },
+        ],
+        accept: [{ l: 'l', r: 'r' }],
+        diagnose: [
+          { when: { r: 'kw' }, kind: 'sign_not_flipped', fb: `${sg(bq)} 移到右邊要變號：${num(c)} ${op(-bq)} = ${num(K)}。` },
+          { when: { l: 'cw' }, kind: 'combine_error', fb: `${term(a, 'x')} ${term(bp, 'x', true).replace(/^([+−])/, '$1 ')} 要連同正負號算，等於 ${term(A, 'x')}。` },
+        ],
+        hints: ['兩個 x 項合併，常數移到等號右邊。', `x 的係數：${num(a)} ${op(bp)} = ${num(A)}。`, `右邊是 ${num(c)} ${op(-bq)} = ${num(K)}。`],
+      }, rng);
+      const s4 = buildStep({
+        key: 'solvex', goal: '求出 x',
+        line: ['x =', { slot: 'v' }],
+        cards: [
+          { key: 'v', text: num(x0) },
+          Math.abs(A) !== 1 && { key: 'nd', text: num(K), trap: 'not_divided' },
+          { key: 'ng', text: num(-x0), trap: 'sign_error' },
+        ],
+        accept: [{ v: 'v' }],
+        diagnose: [
+          { when: { v: 'nd' }, kind: 'not_divided', fb: `${term(A, 'x')} = ${num(K)}，還要兩邊同除以 ${num(A)}。` },
+          { when: { v: 'ng' }, kind: 'sign_error', fb: `${num(K)} ÷ ${pn(A)} 是${x0 > 0 ? '正' : '負'}數。` },
+        ],
+        hints: ['兩邊同除以 x 的係數。', `x = ${num(K)} ÷ ${pn(A)}`, `x = ${num(x0)}`],
+      }, rng);
+      const s5 = buildStep({
+        key: 'solvey', goal: '把 x 代回 ①，求出 y',
+        line: [`y = ${num(p)} × ${pn(x0)} ${op(q)} =`, { slot: 'y' }],
+        cards: [
+          { key: 'y', text: num(y0) },
+          { key: 'fc', text: num(p * x0), trap: 'forgot_const' },
+          { key: 'yn', text: num(-y0), trap: 'sign_error' },
+        ],
+        accept: [{ y: 'y' }],
+        diagnose: [
+          { when: { y: 'fc' }, kind: 'forgot_const', fb: `${num(p)} × ${pn(x0)} = ${num(p * x0)}，還要 ${op(q)}。` },
+          { when: { y: 'yn' }, kind: 'sign_error', fb: `${num(p * x0)} ${op(q)} 是${y0 > 0 ? '正' : '負'}數。` },
+        ],
+        hints: ['先乘再加。', `${num(p)} × ${pn(x0)} = ${num(p * x0)}。`, `${num(p * x0)} ${op(q)} = ${num(y0)}。`],
+      }, rng);
+      return {
+        stem: [`① y = ${yexp}`, `② ${eqXY(a, b, c)}`], params: { p, q, a, b, c },
+        answer: { x: x0, y: y0 }, answerText: `x = ${num(x0)}，y = ${num(y0)}`, steps: [s1, s2, s3, s4, s5],
+      };
+    }),
+  };
+
+  SB.register(subst);
+})();
+
+// ---- packs/05-word2.js ----
+// 內容包：二元一次應用題（買票、雞兔同籠、硬幣三種題型）
+// 格式說明見 docs/pack-format.md；誘答卡、診斷規則、三層提示的寫法可以照這個檔案仿寫。
+(function () {
+  const { buildStep, makeWith, divideStep, rnd, pick, nz, gcd, num, sg, pn, op, term, lin, eqXY, fracText } = SB.tools;
+
+  const W2 = [
+    { t: 'ticket', i1: '全票', i2: '學生票', u: '張', },
+    { t: 'chicken', i1: '雞', i2: '兔子', u: '隻' },
+    { t: 'coin', i1: '5 元硬幣', i2: '10 元硬幣', u: '枚' },
+  ];
+  const word2 = {
+    id: 'word2', grade: '七下', title: '二元一次應用題', unit: '二元一次聯立方程式的應用（列式）',
+    pitch: '設兩個未知數，拖出兩個方程式，用加減消去求解。張數和錢數不要混在一起。',
+    kinds: {
+      unit_confusion: '把單價當成未知數', wrong_unknown: '設錯未知數（設成已知量）', mix_total: '數量和總值混在同一式',
+      swap_value: '單價（腳數）配錯對象', wrong_multiplier: '消去時乘錯數', rhs_not_scaled: '等號右邊沒有一起乘',
+      not_divided: '忘了除以係數', swap_answer: 'x、y 答案對調', back_sub: '代回時沒有減',
+    },
+    stepLabels: { define: '設未知數', eq1: '數量的方程式', eq2: '總值的方程式', eliminate: '消去 x', solve: '求出解' },
+    make: makeWith('word2', (rng) => {
+      const T = pick(rng, W2);
+      let v1, v2, x0, y0, story, val, vw;
+      if (T.t === 'ticket') {
+        v1 = pick(rng, [250, 300, 350, 400]); v2 = pick(rng, [120, 150, 180, 200]);
+        x0 = rnd(rng, 2, 12); y0 = rnd(rng, 3, 18);
+      } else if (T.t === 'chicken') { v1 = 2; v2 = 4; x0 = rnd(rng, 4, 20); y0 = rnd(rng, 3, 15); }
+      else { v1 = 5; v2 = 10; x0 = rnd(rng, 3, 20); y0 = rnd(rng, 3, 20); }
+      if (x0 === y0) return null;
+      const N = x0 + y0, V = v1 * x0 + v2 * y0;
+      vw = T.t === 'chicken' ? '總腳數' : '總金額';
+      if (T.t === 'ticket') { story = `音樂會全票每張 ${v1} 元、學生票每張 ${v2} 元。某班共買了 ${N} 張票，花了 ${V} 元。全票和學生票各買了幾張？`; val = '元'; }
+      else if (T.t === 'chicken') { story = `籠子裡有雞和兔子共 ${N} 隻，腳共有 ${V} 隻。雞和兔子各有幾隻？`; val = '隻腳'; }
+      else { story = `撲滿裡只有 5 元和 10 元硬幣，共 ${N} 枚，總共 ${V} 元。5 元和 10 元硬幣各有幾枚？`; val = '元'; }
+      const okDef = `${T.i1} x ${T.u}、${T.i2} y ${T.u}`;
+      const unitTrap = T.t === 'chicken' ? `雞 x 隻腳、兔子 y 隻腳` : T.t === 'ticket' ? '全票每張 x 元、學生票每張 y 元' : '5 元硬幣 x 元、10 元硬幣 y 元';
+      const s1 = buildStep({
+        key: 'define', goal: '設兩個未知數：題目問的是「各有幾' + T.u + '」',
+        line: ['設', { slot: 'u' }],
+        cards: [
+          { key: 'ok', text: okDef },
+          { key: 'uc', text: unitTrap, trap: 'unit_confusion' },
+          { key: 'wu', text: `共 x ${T.u}、共 y ${val}`, trap: 'wrong_unknown' },
+        ],
+        accept: [{ u: 'ok' }],
+        diagnose: [
+          { when: { u: 'uc' }, kind: 'unit_confusion', fb: T.t === 'chicken' ? '雞 2 隻腳、兔子 4 隻腳是已知的，要設的是隻數。' : '單價（面額）題目已經告訴你了，要設的是數量。' },
+          { when: { u: 'wu' }, kind: 'wrong_unknown', fb: `共 ${N} ${T.u}、共 ${V} ${val}都是已知的。` },
+        ],
+        hints: ['題目最後問什麼？', `問的是兩種各有幾${T.u}。`, `設「${okDef}」。`],
+      }, rng);
+      const s2 = buildStep({
+        key: 'eq1', goal: `第一個方程式：用「${T.u}數」相等列式`,
+        line: ['①', { slot: 'e' }],
+        cards: [
+          { key: 'ok', text: `x + y = ${N}` },
+          { key: 't1', text: `x + y = ${V}`, trap: 'mix_total' },
+          { key: 't2', text: `${v1}x + ${v2}y = ${N}`, trap: 'mix_total' },
+        ],
+        accept: [{ e: 'ok' }],
+        diagnose: [
+          { when: { e: 't1' }, kind: 'mix_total', fb: `x + y 是${T.u}數，要等於 ${N}；${V} 是${vw}。` },
+          { when: { e: 't2' }, kind: 'mix_total', fb: `${v1}x + ${v2}y 算的是${vw}，不是${T.u}數。` },
+        ],
+        hints: [`兩種的${T.u}數加起來是多少？`, `x + y 是總${T.u}數。`, `x + y = ${N}。`],
+      }, rng);
+      const s3 = buildStep({
+        key: 'eq2', goal: `第二個方程式：用「${vw}」相等列式`,
+        line: ['②', { slot: 'e' }],
+        cards: [
+          { key: 'ok', text: `${v1}x + ${v2}y = ${V}` },
+          { key: 'sw', text: `${v2}x + ${v1}y = ${V}`, trap: 'swap_value' },
+          { key: 'mt', text: `${v1}x + ${v2}y = ${N}`, trap: 'mix_total' },
+        ],
+        accept: [{ e: 'ok' }],
+        diagnose: [
+          { when: { e: 'sw' }, kind: 'swap_value', fb: `x 是${T.i1}，要乘${T.i1}的 ${v1}；y 是${T.i2}，乘 ${v2}。` },
+          { when: { e: 'mt' }, kind: 'mix_total', fb: `${v1}x + ${v2}y 算的是${vw}，要等於 ${V}。` },
+        ],
+        hints: [`每一${T.u}${T.i1}是 ${v1}、每一${T.u}${T.i2}是 ${v2}。`, `${T.i1}的部分是 ${v1}x。`, `${v1}x + ${v2}y = ${V}。`],
+      }, rng);
+      const D = v2 - v1, R = V - v1 * N;
+      const s4 = buildStep({
+        key: 'eliminate', goal: '加減消去：② 減去 ① 的幾倍，可以消去 x？',
+        line: ['② − ① ×', { slot: 'k' }, '：', { slot: 'r' }],
+        cards: [
+          { key: 'k', text: num(v1) },
+          { key: 'kw', text: num(v2), trap: 'wrong_multiplier' },
+          { key: 'r', text: `${term(D, 'y')} = ${num(R)}` },
+          { key: 'rw', text: `${term(D, 'y')} = ${num(V - N)}`, trap: 'rhs_not_scaled' },
+        ],
+        accept: [{ k: 'k', r: 'r' }],
+        diagnose: [
+          { when: { k: 'kw' }, kind: 'wrong_multiplier', fb: `要消去 x：② 的 x 係數是 ${v1}，所以 ① 要乘 ${v1}。` },
+          { when: { r: 'rw' }, kind: 'rhs_not_scaled', fb: `① 乘 ${v1} 時右邊也要乘：${V} − ${v1} × ${N} = ${R}。` },
+        ],
+        hints: [`② 的 x 係數是 ${v1}，① 的 x 係數是 1。`, `① × ${v1} 後再相減，x 就消去了。`, `${V} − ${v1} × ${N} = ${R}。`],
+      }, rng);
+      const s5 = buildStep({
+        key: 'solve', goal: '先求 y，再代回 ① 求 x',
+        scaffold: `${term(D, 'y')} = ${num(R)}，y = ${num(R)} ÷ ${D}；再由 x + y = ${N} 求 x`,
+        line: ['x =', { slot: 'x' }, '，y =', { slot: 'y' }],
+        cards: [
+          { key: 'cx', text: num(x0) }, { key: 'cy', text: num(y0) },
+          D !== 1 && R !== y0 && R !== x0 && R !== N && { key: 'nd', text: num(R), trap: 'not_divided' },
+          { key: 'n', text: num(N), trap: 'back_sub' },
+        ],
+        accept: [{ x: 'cx', y: 'cy' }],
+        diagnose: [
+          { when: { x: 'cy', y: 'cx' }, kind: 'swap_answer', fb: `x 是${T.i1}、y 是${T.i2}，答案放反了。` },
+          { when: { y: 'nd' }, kind: 'not_divided', fb: `${term(D, 'y')} = ${num(R)}，還要除以 ${D}。` },
+          { when: { x: 'nd' }, kind: 'not_divided', fb: `先由 ${term(D, 'y')} = ${num(R)} 求 y，再求 x。` },
+          { when: { x: 'n' }, kind: 'back_sub', fb: `x = ${N} − y = ${N} − ${y0} = ${x0}。` },
+        ],
+        hints: [`y = ${num(R)} ÷ ${D}。`, `y = ${y0}，代回 x + y = ${N}。`, `x = ${N} − ${y0} = ${x0}。`],
+      }, rng);
+      return {
+        story, stem: [], params: { t: T.t, v1, v2, N, V }, answer: { x: x0, y: y0 },
+        answerText: `${T.i1} ${x0} ${T.u}、${T.i2} ${y0} ${T.u}`, steps: [s1, s2, s3, s4, s5],
+      };
+    }),
+  };
+
+  SB.register(word2);
+})();
+
+// 自動驗算（瀏覽器 test.html 與 node test/run.mjs 共用）
+// 原則：不用內容包自己的算法，而是把「正解卡放進算式行」後的整行文字，用獨立的求值器代回答案檢查。
+(function (root) {
+  // ---------- 獨立求值器：+ − × ÷ 括號、隱含乘法、x y、次方（^、²、³）、分數 (a)/(b) ----------
+  function evaluate(src, env) {
+    const s = src.replace(/−/g, '-').replace(/×/g, '*').replace(/÷/g, '/').replace(/²/g, '^2').replace(/³/g, '^3');
+    const toks = s.match(/\d+(?:\.\d+)?|[xy]|[-+*/()^]/g) || [];
+    let i = 0;
+    const peek = () => toks[i];
+    const next = () => toks[i++];
+    function expr() {
+      let v = term();
+      while (peek() === '+' || peek() === '-') { const o = next(); const r = term(); v = o === '+' ? v + r : v - r; }
+      return v;
+    }
+    function term() {
+      let v = unary();
+      for (;;) {
+        const t = peek();
+        if (t === '*' || t === '/') { next(); const r = unary(); v = t === '*' ? v * r : v / r; }
+        else if (t !== undefined && (/^[\d.]+$|^[xy]$/.test(t) || t === '(')) v *= power();
+        else return v;
+      }
+    }
+    function unary() {
+      if (peek() === '-') { next(); return -unary(); }
+      if (peek() === '+') { next(); return unary(); }
+      return power();
+    }
+    function power() {
+      const b = atom();
+      if (peek() === '^') { next(); return Math.pow(b, unary()); }
+      return b;
+    }
+    function atom() {
+      const t = next();
+      if (t === '(') { const v = expr(); if (next() !== ')') throw new Error('括號不成對'); return v; }
+      if (t === 'x' || t === 'y') return env[t];
+      if (t !== undefined && /^[\d.]+$/.test(t)) return +t;
+      throw new Error(`看不懂的符號「${t}」`);
+    }
+    const v = expr();
+    if (i !== toks.length) throw new Error('算式結尾有多餘的符號');
+    return v;
+  }
+
+  // 把一個步驟的算式行，依放卡方式組成純文字
+  function lineText(step, pl) {
+    const card = (id) => (step.cards.find((c) => c.id === id) || {}).text || '';
+    const tok = (t) => {
+      if (typeof t === 'string') return t;
+      if (t.slot) return card(pl[t.slot]);
+      if (t.frac) return `(${t.frac[0].map(tok).join(' ')})/(${t.frac[1].map(tok).join(' ')})`;
+      if (t.br) return '　';
+      return '';
+    };
+    return step.line.map(tok).join(' ').replace(/\[frac:(\d+)\|(\d+)\]/g, '($1/$2)');
+  }
+
+  // 找出可以求值的等式片段（中文說明、編號會被略過）
+  const MATH = /^[0-9xy+\-−×÷()\s=./^²³]+$/;
+  function segments(text) {
+    const out = [];
+    for (let seg of text.split(/[，　：；]|得|答/)) {
+      seg = seg.replace(/^[\s①②③④′]+/, '').replace(/^設.*/, '').trim();
+      if (seg.includes('=') && MATH.test(seg)) out.push(seg);
+    }
+    return out;
+  }
+  // 回傳 true／false（等式鏈是否成立），或 null（沒有可求值的片段）
+  function holds(text, envs) {
+    const segs = segments(text);
+    if (!segs.length) return null;
+    for (const env of envs) {
+      for (const seg of segs) {
+        const parts = seg.split('=').map((p) => evaluate(p, env));
+        if (parts.some((p) => !Number.isFinite(p) || Math.abs(p - parts[0]) > 1e-9)) return false;
+      }
+    }
+    return true;
+  }
+  // 方程式：代入答案；恆等式（answer.identity）：代入幾組不同的數
+  function envsFor(p) {
+    if (p.answer && p.answer.identity) return [{ x: 2, y: 3 }, { x: -3, y: 5 }, { x: 7, y: -2 }];
+    return [{ x: p.answer.x, y: p.answer.y ?? 0 }];
+  }
+
+  function verifyPack(SB, pack, { n = 300 } = {}) {
+    const errors = [];
+    const err = (m) => { if (errors.length < 20) errors.push(m); };
+    const triggered = new Set();
+    let problems = 0, steps = 0, evalLines = 0;
+    for (let seed = 1; seed <= n; seed++) {
+      let p;
+      try { p = pack.make(SB.mulberry32(seed)); } catch (e) { err(`第 ${seed} 題產生失敗：${e.message}`); continue; }
+      problems++;
+      const where = `第 ${seed} 題`;
+      if (!p || !Array.isArray(p.steps) || !p.steps.length) { err(`${where}：沒有步驟`); continue; }
+      if (!Array.isArray(p.stem) || !p.answer || !p.answerText) { err(`${where}：缺少 stem／answer／answerText`); continue; }
+      const envs = envsFor(p);
+      let problemEval = 0;
+      try {
+        for (const st of p.stem) if (holds(st, envs) === false) err(`${where}：題目 ${st} 代入答案不成立`);
+      } catch (e) { err(`${where}：題目無法求值（${e.message}）`); }
+      p.steps.forEach((s, si) => {
+        steps++;
+        const at = `${where}第 ${si + 1} 步（${s.key}）`;
+        const slots = SB.slotIds(s);
+        if (slots.length < 1 || slots.length > 3) err(`${at}：空格要 1～3 個，現在 ${slots.length} 個`);
+        if (new Set(slots).size !== slots.length) err(`${at}：空格代號重複`);
+        if (new Set(s.cards.map((c) => c.text)).size !== s.cards.length) err(`${at}：卡片文字重複`);
+        if (s.cards.length < slots.length + 1) err(`${at}：卡片至少要比空格多 1 張`);
+        if (!Array.isArray(s.hints) || s.hints.length !== 3) err(`${at}：提示必須剛好三層`);
+        if (!s.goal) err(`${at}：缺少 goal`);
+        if (!pack.stepLabels[s.key]) err(`${at}：stepLabels 沒有 ${s.key}`);
+        if (!s.accept.length) err(`${at}：沒有 accept`);
+        for (const a of s.accept) {
+          if (!SB.checkStep(s, a).ok) err(`${at}：accept 本身不成立`);
+          for (const id of Object.values(a)) if ((s.cards.find((c) => c.id === id) || {}).trap) err(`${at}：誘答卡出現在 accept`);
+          try {
+            const h = holds(lineText(s, a), envs);
+            if (h === false) err(`${at}：正解代入答案不成立 → ${lineText(s, a)}`);
+            if (h !== null) { evalLines++; problemEval++; }
+          } catch (e) { err(`${at}：算式行無法求值（${e.message}）→ ${lineText(s, a)}`); }
+        }
+        for (const r of s.diagnose) {
+          const pl = { ...s.accept[0] };
+          for (const [k, w] of Object.entries(r.when)) pl[k] = [].concat(w)[0];
+          const res = SB.checkStep(s, pl);
+          if (res.ok) err(`${at}：診斷規則 ${r.kind} 的放法竟然被接受`);
+          else if (res.kind !== r.kind) err(`${at}：診斷規則 ${r.kind} 被前面的規則 ${res.kind} 搶走`);
+          if (!pack.kinds[r.kind]) err(`${at}：誤解代碼 ${r.kind} 沒有寫在 kinds`);
+          if (!r.fb) err(`${at}：診斷規則 ${r.kind} 沒有回饋句`);
+          triggered.add(r.kind);
+        }
+        for (const c of s.cards.filter((x) => x.trap)) {
+          if (!pack.kinds[c.trap]) err(`${at}：誘答卡 ${c.text} 的代碼 ${c.trap} 沒有寫在 kinds`);
+          const has = s.diagnose.some((r) => r.kind === c.trap && Object.values(r.when).some((w) => [].concat(w).includes(c.id)));
+          if (!has) err(`${at}：誘答卡 ${c.text}（${c.trap}）沒有對應的診斷規則`);
+        }
+      });
+      if (!problemEval) err(`${where}：沒有任何一行可以自動驗算，至少要有一行純算式`);
+    }
+    for (const k of Object.keys(pack.kinds)) if (!triggered.has(k)) err(`誤解 ${k} 在 ${n} 題中從未被觸發（kinds 多寫了，或誘答卡條件太嚴）`);
+    return { id: pack.id, title: pack.title, problems, steps, evalLines, ok: errors.length === 0, errors };
+  }
+
+  const api = { evaluate, holds, segments, verifyPack, verifyAll: (SB, opts) => SB.PACKS.map((p) => verifyPack(SB, p, opts)) };
+  root.SBTest = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+  setTimeout(() => {
+    const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const rs = SBTest.verifyAll(SB, { n: 500 });
+    const bad = rs.filter((r) => !r.ok).length;
+    document.getElementById('out').innerHTML =
+      `<div class="sum ${bad ? 'bad' : ''}">${bad ? `${bad} 個內容包沒有通過` : `全部通過（${rs.length} 個內容包）`}</div>` +
+      rs.map((r) => `<div class="r ${r.ok ? '' : 'bad'}"><b>${r.ok ? '✔' : '✘'} ${esc(r.title)}</b>（${esc(r.id)}）<br>
+        <span class="muted">${r.problems} 題、${r.steps} 步、${r.evalLines} 行算式代回答案</span>
+        ${r.ok ? '' : `<ul>${r.errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul>`}</div>`).join('');
+  }, 50);
+</script>
+</body>
+</html>
